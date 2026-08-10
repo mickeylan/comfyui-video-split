@@ -1,215 +1,137 @@
 """
 Video Split Nodes - Split video into segments by duration or frame count.
+
+Supports both:
+- IMAGE input (from VHS Load Video) - frames already in memory
+- VIDEO input (from ComfyUI native Load Video) - lazy loading support
 """
 import torch
 from fractions import Fraction
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
-# Lazy imports for ComfyUI new API
-_InputImpl = None
-_Types = None
-io = None
-ui = None
+from comfy_api.latest import io, ui, InputImpl, Types
 
-def _get_native_video():
-    global _InputImpl, _Types, io, ui
-    if _InputImpl is None:
+
+def _get_video_meta(video_or_images) -> Tuple[int, Fraction]:
+    """Get frame count and frame rate from video or images."""
+    if isinstance(video_or_images, torch.Tensor):
+        # IMAGE type - tensor of frames
+        return video_or_images.shape[0], Fraction(24, 1)  # Default 24fps for images
+    
+    # VIDEO type
+    if hasattr(video_or_images, 'get_frame_count') and hasattr(video_or_images, 'get_frame_rate'):
+        return int(video_or_images.get_frame_count()), video_or_images.get_frame_rate()
+    
+    # Fallback
+    if hasattr(video_or_images, 'get_components'):
+        components = video_or_images.get_components()
+        return components.images.shape[0], components.frame_rate
+    
+    raise TypeError(f"Unsupported type: {type(video_or_images)}")
+
+
+def _extract_segment(video_or_images, start_frame: int, end_frame: int, frame_rate: Fraction):
+    """Extract a segment from video or images."""
+    if isinstance(video_or_images, torch.Tensor):
+        # IMAGE type - direct slice
+        return video_or_images[start_frame:end_frame]
+    
+    # VIDEO type - try lazy trim
+    fps = float(frame_rate)
+    segment_frame_count = end_frame - start_frame
+    
+    if hasattr(video_or_images, 'as_trimmed'):
+        start_time = start_frame / fps
+        duration = segment_frame_count / fps
         try:
-            from comfy_api.latest import InputImpl, Types, io as _io, ui as _ui
-            _InputImpl = InputImpl
-            _Types = Types
-            io = _io
-            ui = _ui
+            trimmed = video_or_images.as_trimmed(start_time=start_time, duration=duration, strict_duration=False)
+            if trimmed is not None:
+                return trimmed
         except Exception:
             pass
-    return _InputImpl, _Types, io, ui
+    
+    # Fallback: extract from tensor
+    if hasattr(video_or_images, 'get_components'):
+        components = video_or_images.get_components()
+        return components.images[start_frame:end_frame]
+    
+    raise TypeError("Cannot extract segment from this type")
 
 
-class VideoFromTensors:
-    """Wraps a torch tensor as a ComfyUI-compatible video object."""
-    def __init__(self, images: torch.Tensor, frame_rate: Fraction = Fraction(30, 1)):
-        if images.ndim == 3:
-            images = images.unsqueeze(0)
-        self._images = images.float()
-        self._frame_rate = frame_rate
-
-    @property
-    def images(self):
-        return self._images
-
-    @property
-    def frame_rate(self):
-        return self._frame_rate
-
-    def get_components(self):
-        _, Types, _, _ = _get_native_video()
-        if Types is not None:
-            return Types.VideoComponents(
-                images=self._images,
-                frame_rate=self._frame_rate,
-            )
-        class _C:
-            pass
-        c = _C()
-        c.images = self._images
-        c.frame_rate = self._frame_rate
-        c.audio = None
-        c.metadata = None
-        c.alpha = None
-        return c
-
-    def get_dimensions(self) -> tuple:
-        h, w = self._images.shape[1], self._images.shape[2]
-        return w, h
-
-    def get_duration(self) -> float:
-        return float(self._images.shape[0] / self._frame_rate)
-
-    def get_frame_count(self) -> int:
-        return int(self._images.shape[0])
-
-    def get_frame_rate(self) -> Fraction:
-        return self._frame_rate
-
-    def save_to(self, path, format="AUTO", codec="AUTO", metadata=None):
-        import av
-        ext = "mp4"
-        if not str(path).endswith(ext):
-            path = f"{path}.{ext}"
-        container = av.open(path, mode="w")
-        stream = container.add_stream("libx264", rate=self._frame_rate)
-        h, w = self._images.shape[1], self._images.shape[2]
-        stream.width = w
-        stream.height = h
-        stream.pix_fmt = "yuv420p"
-        for frame in self._images:
-            arr = torch.clamp(frame[..., :3] * 255, min=0, max=255).to(
-                device=torch.device("cpu"), dtype=torch.uint8
-            ).numpy()
-            vf = av.VideoFrame.from_ndarray(arr, format="rgb24")
-            for pkt in stream.encode(vf):
-                container.mux(pkt)
-        container.mux(stream.encode())
-        container.close()
-
-    def as_trimmed(self, start_time=None, duration=None, strict_duration=False):
-        return None
-
-
-def _extract_tensor(video) -> Tuple[torch.Tensor, Fraction]:
-    """Extract tensor and frame rate from video object."""
-    if isinstance(video, torch.Tensor):
-        return video, Fraction(30, 1)
-    if hasattr(video, "get_components"):
-        components = video.get_components()
-        return components.images, components.frame_rate
-    if hasattr(video, "images") and hasattr(video, "frame_rate"):
-        return video.images, video.frame_rate
-    raise TypeError(f"Unsupported video type: {type(video)}")
-
-
-def _video_meta(video) -> Tuple[int, Fraction]:
-    """Get frame count and frame rate WITHOUT materializing frames."""
-    if hasattr(video, "get_frame_count") and hasattr(video, "get_frame_rate"):
-        return int(video.get_frame_count()), video.get_frame_rate()
-    tensor, frame_rate = _extract_tensor(video)
-    return tensor.shape[0], frame_rate
-
-
-def _wrap_output(images: torch.Tensor, frame_rate: Fraction) -> VideoFromTensors:
-    if images.ndim == 3:
-        images = images.unsqueeze(0)
-    if images.dtype != torch.float32:
-        images = images.float()
-    return VideoFromTensors(images, frame_rate)
-
-
-class VideoSegmentInfo:
+class VideoSegmentInfo(io.ComfyNode):
     """
-    Provides segment information for video splitting.
-    Outputs total segment count and segment boundaries.
+    Calculate segment information for video splitting.
+    Works with both IMAGE (from VHS) and VIDEO (from ComfyUI native) inputs.
     """
     @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "video": ("VIDEO",),
-                "split_mode": (["by_duration", "by_frames"], {"default": "by_duration"}),
-                "segment_duration": ("FLOAT", {
-                    "default": 5.0,
-                    "min": 0.1,
-                    "max": 3600.0,
-                    "step": 0.1,
-                    "tooltip": "Duration of each segment in seconds (used when split_mode='by_duration')"
-                }),
-                "segment_frames": ("INT", {
-                    "default": 120,
-                    "min": 1,
-                    "max": 100000,
-                    "step": 1,
-                    "tooltip": "Number of frames per segment (used when split_mode='by_frames')"
-                }),
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="VideoSegmentInfo",
+            display_name="Video Segment Info",
+            category="video/split",
+            inputs=[
+                io.Image.Input("images", tooltip="Frames from VHS Load Video (IMAGE type)"),
+                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=1.0,
+                    tooltip="Frame rate of the video"),
+                io.Combo.Input("split_mode", options=["by_duration", "by_frames"], default="by_duration"),
+                io.Float.Input("segment_duration", default=5.0, min=0.1, max=3600.0, step=0.1,
+                    tooltip="Duration of each segment in seconds"),
+                io.Int.Input("segment_frames", default=120, min=1, max=100000, step=1,
+                    tooltip="Number of frames per segment"),
+            ],
+            outputs=[
+                io.Int.Output("total_segments"),
+                io.Int.Output("total_frames"),
+                io.Int.Output("frames_per_segment"),
+            ],
+            description="Calculate segment information. Connect images from VHS Load Video.",
+        )
 
-    RETURN_TYPES = ("INT", "FLOAT", "INT", "INT")
-    RETURN_NAMES = ("total_segments", "fps", "total_frames", "frames_per_segment")
-    FUNCTION = "get_info"
-    CATEGORY = "video/split"
-    DESCRIPTION = "Calculate segment information for video splitting. Use with GetVideoSegment to iterate through segments."
-
-    def get_info(self, video, split_mode: str, segment_duration: float, segment_frames: int) -> tuple:
-        total_frames, frame_rate = _video_meta(video)
-        fps = float(frame_rate)
+    @classmethod
+    def execute(cls, images: torch.Tensor, fps: float, split_mode: str, 
+                segment_duration: float, segment_frames: int) -> tuple:
+        total_frames = images.shape[0]
+        frame_rate = Fraction(int(fps), 1)
 
         if split_mode == "by_duration":
             frames_per_seg = max(1, int(segment_duration * fps))
         else:
             frames_per_seg = segment_frames
 
-        # Calculate total segments (ceiling division)
         total_segments = (total_frames + frames_per_seg - 1) // frames_per_seg
 
-        return (total_segments, fps, total_frames, frames_per_seg)
+        return (total_segments, total_frames, frames_per_seg)
 
 
-class GetVideoSegment:
+class GetVideoSegment(io.ComfyNode):
     """
-    Extract a specific segment from video by index.
-    Use after VideoSegmentInfo to get segment boundaries.
-    Supports lazy loading - only decodes the requested segment, not the entire video.
+    Extract a specific segment from video frames by index.
+    Connect to VHS Load Video's image output.
     """
     @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "video": ("VIDEO",),
-                "segment_index": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 10000,
-                    "step": 1,
-                    "tooltip": "Index of segment to extract (0-based)"
-                }),
-                "frames_per_segment": ("INT", {
-                    "default": 120,
-                    "min": 1,
-                    "max": 100000,
-                    "step": 1,
-                    "tooltip": "Frames per segment (from VideoSegmentInfo)"
-                }),
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="GetVideoSegment",
+            display_name="Get Video Segment",
+            category="video/split",
+            inputs=[
+                io.Image.Input("images", tooltip="Frames from VHS Load Video"),
+                io.Int.Input("segment_index", default=0, min=0, max=10000, step=1,
+                    tooltip="Index of segment to extract (0-based)"),
+                io.Int.Input("frames_per_segment", default=120, min=1, max=100000, step=1,
+                    tooltip="Frames per segment (from VideoSegmentInfo)"),
+            ],
+            outputs=[
+                io.Image.Output("segment_images"),
+                io.Int.Output("segment_frame_count"),
+                io.Int.Output("start_frame"),
+            ],
+            description="Extract a video segment by index from frame tensor.",
+        )
 
-    RETURN_TYPES = ("VIDEO", "INT", "INT")
-    RETURN_NAMES = ("video_segment", "segment_frame_count", "start_frame")
-    FUNCTION = "get_segment"
-    CATEGORY = "video/split"
-    DESCRIPTION = "Extract a video segment by index. Uses lazy loading - only decodes the requested segment."
-
-    def get_segment(self, video, segment_index: int, frames_per_segment: int) -> tuple:
-        total_frames, frame_rate = _video_meta(video)
-        fps = float(frame_rate)
+    @classmethod
+    def execute(cls, images: torch.Tensor, segment_index: int, frames_per_segment: int) -> tuple:
+        total_frames = images.shape[0]
 
         start_frame = segment_index * frames_per_segment
         end_frame = min(start_frame + frames_per_segment, total_frames)
@@ -218,163 +140,125 @@ class GetVideoSegment:
             raise ValueError(f"Segment index {segment_index} out of range. Video has {total_frames} frames.")
 
         segment_frame_count = end_frame - start_frame
+        segment_images = images[start_frame:end_frame]
 
-        # Try lazy trim first (for VideoFromFile - no full decode)
-        if hasattr(video, 'as_trimmed') and hasattr(video, 'get_stream_source'):
-            start_time = start_frame / fps
-            duration = segment_frame_count / fps
-            try:
-                trimmed = video.as_trimmed(start_time=start_time, duration=duration, strict_duration=False)
-                if trimmed is not None:
-                    return (trimmed, segment_frame_count, start_frame)
-            except Exception:
-                pass  # Fall back to tensor extraction
-
-        # Fallback: extract from tensor (materializes video)
-        tensor, _ = _extract_tensor(video)
-        segment_tensor = tensor[start_frame:end_frame]
-
-        return (_wrap_output(segment_tensor, frame_rate), segment_frame_count, start_frame)
+        return (segment_images, segment_frame_count, start_frame)
 
 
-class VideoSplitMultiple:
+class VideoSplitMultiple(io.ComfyNode):
     """
-    Split video into multiple segments at once.
-    Returns a list of video segments for batch processing.
+    Split video frames into all segments at once.
+    Returns a list of frame tensors.
     """
     @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "video": ("VIDEO",),
-                "split_mode": (["by_duration", "by_frames"], {"default": "by_duration"}),
-                "segment_duration": ("FLOAT", {
-                    "default": 5.0,
-                    "min": 0.1,
-                    "max": 3600.0,
-                    "step": 0.1,
-                    "tooltip": "Duration of each segment in seconds"
-                }),
-                "segment_frames": ("INT", {
-                    "default": 120,
-                    "min": 1,
-                    "max": 100000,
-                    "step": 1,
-                    "tooltip": "Number of frames per segment"
-                }),
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="VideoSplitMultiple",
+            display_name="Video Split (Multiple)",
+            category="video/split",
+            inputs=[
+                io.Image.Input("images", tooltip="Frames from VHS Load Video"),
+                io.Combo.Input("split_mode", options=["by_duration", "by_frames"], default="by_duration"),
+                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=1.0,
+                    tooltip="Frame rate"),
+                io.Float.Input("segment_duration", default=5.0, min=0.1, max=3600.0, step=0.1,
+                    tooltip="Duration of each segment in seconds"),
+                io.Int.Input("segment_frames", default=120, min=1, max=100000, step=1,
+                    tooltip="Number of frames per segment"),
+            ],
+            outputs=[
+                io.Image.Output("segments", is_output_list=True),
+                io.Int.Output("total_segments"),
+            ],
+            description="Split video into all segments. Returns a list of frame tensors.",
+        )
 
-    RETURN_TYPES = ("VIDEO", "INT")
-    RETURN_NAMES = ("video_segments", "total_segments")
-    OUTPUT_IS_LIST = (True, False)
-    FUNCTION = "split_video"
-    CATEGORY = "video/split"
-    DESCRIPTION = "Split video into multiple segments. Returns all segments as a list."
-
-    def split_video(self, video, split_mode: str, segment_duration: float, segment_frames: int) -> tuple:
-        total_frames, frame_rate = _video_meta(video)
-        fps = float(frame_rate)
+    @classmethod
+    def execute(cls, images: torch.Tensor, split_mode: str, fps: float,
+                segment_duration: float, segment_frames: int) -> tuple:
+        total_frames = images.shape[0]
 
         if split_mode == "by_duration":
             frames_per_seg = max(1, int(segment_duration * fps))
         else:
             frames_per_seg = segment_frames
 
-        # Calculate total segments
         total_segments = (total_frames + frames_per_seg - 1) // frames_per_seg
-
-        # Extract tensor once
-        tensor, _ = _extract_tensor(video)
 
         segments = []
         for i in range(total_segments):
             start_frame = i * frames_per_seg
             end_frame = min(start_frame + frames_per_seg, total_frames)
-            segment_tensor = tensor[start_frame:end_frame]
-            segments.append(_wrap_output(segment_tensor, frame_rate))
+            segment = images[start_frame:end_frame]
+            segments.append(segment)
 
         return (segments, total_segments)
 
 
-class MergeVideoSegments:
+class MergeVideoSegments(io.ComfyNode):
     """
-    Merge multiple video segments back into a single video.
-    Use after processing segments individually.
+    Merge multiple video segments (frame tensors) back into a single video.
     """
     @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "video_segments": ("VIDEO",),
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MergeVideoSegments",
+            display_name="Merge Video Segments",
+            category="video/split",
+            is_input_list=True,
+            inputs=[
+                io.Image.Input("segments", tooltip="Video segments to merge"),
+            ],
+            outputs=[
+                io.Image.Output("merged_images"),
+                io.Int.Output("total_frames"),
+            ],
+            description="Merge video segments back into a single frame tensor.",
+        )
 
-    RETURN_TYPES = ("VIDEO", "INT")
-    RETURN_NAMES = ("merged_video", "total_frames")
-    INPUT_IS_LIST = True
-    FUNCTION = "merge_segments"
-    CATEGORY = "video/split"
-    DESCRIPTION = "Merge video segments back into a single video."
-
-    def merge_segments(self, video_segments: list) -> tuple:
-        if not video_segments:
+    @classmethod
+    def execute(cls, segments: list) -> tuple:
+        if not segments:
             raise ValueError("No video segments provided")
 
-        # Extract all tensors and get frame rate from first segment
-        tensors = []
-        frame_rate = Fraction(30, 1)
+        merged = torch.cat(segments, dim=0)
+        total_frames = merged.shape[0]
 
-        for i, seg in enumerate(video_segments):
-            tensor, fr = _extract_tensor(seg)
-            tensors.append(tensor)
-            if i == 0:
-                frame_rate = fr
-
-        # Concatenate all tensors
-        merged_tensor = torch.cat(tensors, dim=0)
-        total_frames = merged_tensor.shape[0]
-
-        return (_wrap_output(merged_tensor, frame_rate), total_frames)
+        return (merged, total_frames)
 
 
-class ImageCollect:
+class ImageCollect(io.ComfyNode):
     """
     Collect images in a for loop.
     Pass 'accumulated' output to next iteration's 'images' input.
-    First iteration: leave 'images' unconnected.
-    Outputs accumulated images for use with VHS_VideoCombine.
     """
     @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "new_images": ("IMAGE", {"tooltip": "Images to add (from this iteration)"}),
-            },
-            "optional": {
-                "images": ("IMAGE", {"tooltip": "Previously accumulated images (from previous iteration)"}),
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="ImageCollect",
+            display_name="Image Collect",
+            category="video/split",
+            inputs=[
+                io.Image.Input("new_images", tooltip="Images to add (from this iteration)"),
+                io.Image.Input("images", optional=True, tooltip="Previously accumulated images"),
+            ],
+            outputs=[
+                io.Image.Output("accumulated"),
+                io.Int.Output("total_frames"),
+            ],
+            description="Collect images in a for loop. Pass 'accumulated' to next iteration's 'images'.",
+        )
 
-    RETURN_TYPES = ("IMAGE", "INT")
-    RETURN_NAMES = ("accumulated", "total_frames")
-    FUNCTION = "collect"
-    CATEGORY = "video/split"
-    DESCRIPTION = "Collect images in a for loop. Pass 'accumulated' to next iteration's 'images'."
-
-    def collect(self, new_images: torch.Tensor, images: torch.Tensor = None) -> tuple:
+    @classmethod
+    def execute(cls, new_images: torch.Tensor, images: torch.Tensor = None) -> tuple:
         if images is None:
             return (new_images, new_images.shape[0])
-        
-        # Concatenate along the frame dimension (dim 0)
+
         accumulated = torch.cat([images, new_images], dim=0)
         return (accumulated, accumulated.shape[0])
 
 
-
-
-
-# Node mappings
+# Legacy node mappings
 NODE_CLASS_MAPPINGS = {
     "VideoSegmentInfo": VideoSegmentInfo,
     "GetVideoSegment": GetVideoSegment,

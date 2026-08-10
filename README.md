@@ -25,7 +25,8 @@
 **输入：**
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| video | VIDEO | - | 输入视频 |
+| images | IMAGE | - | 帧张量（连接 VHS Load Video 的 image 输出） |
+| fps | FLOAT | 24.0 | 视频帧率 |
 | split_mode | 选择 | by_duration | 分段模式：by_duration（按时长）或 by_frames（按帧数） |
 | segment_duration | FLOAT | 5.0 | 每段时长（秒），split_mode=by_duration 时使用 |
 | segment_frames | INT | 120 | 每段帧数，split_mode=by_frames 时使用 |
@@ -34,7 +35,6 @@
 | 输出 | 类型 | 说明 |
 |------|------|------|
 | total_segments | INT | 总分段数 |
-| fps | FLOAT | 视频帧率 |
 | total_frames | INT | 视频总帧数 |
 | frames_per_segment | INT | 每段帧数 |
 
@@ -47,20 +47,16 @@
 **输入：**
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| video | VIDEO | - | 输入视频 |
+| images | IMAGE | - | 帧张量（连接 VHS Load Video 的 image 输出） |
 | segment_index | INT | 0 | 分段索引（从0开始） |
 | frames_per_segment | INT | 120 | 每段帧数（来自 Video Segment Info） |
 
 **输出：**
 | 输出 | 类型 | 说明 |
 |------|------|------|
-| video_segment | VIDEO | 当前分段的视频 |
+| segment_images | IMAGE | 当前分段的帧张量 |
 | segment_frame_count | INT | 当前分段帧数 |
 | start_frame | INT | 当前分段起始帧索引 |
-
-**特性：**
-- 支持**懒加载裁剪**，只解码当前分段，不加载整个视频到内存
-- 对于已加载到内存的视频，回退到张量切片
 
 ---
 
@@ -71,15 +67,16 @@
 **输入：**
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| video | VIDEO | - | 输入视频 |
+| images | IMAGE | - | 帧张量（连接 VHS Load Video 的 image 输出） |
 | split_mode | 选择 | by_duration | 分段模式 |
+| fps | FLOAT | 24.0 | 视频帧率 |
 | segment_duration | FLOAT | 5.0 | 每段时长（秒） |
 | segment_frames | INT | 120 | 每段帧数 |
 
 **输出：**
 | 输出 | 类型 | 说明 |
 |------|------|------|
-| video_segments | VIDEO (列表) | 所有分段的视频列表 |
+| segments | IMAGE (列表) | 所有分段的帧张量列表 |
 | total_segments | INT | 总分段数 |
 
 ---
@@ -91,12 +88,12 @@
 **输入：**
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| video_segments | VIDEO (列表) | 要合并的视频分段 |
+| segments | IMAGE (列表) | 要合并的帧张量分段 |
 
 **输出：**
 | 输出 | 类型 | 说明 |
 |------|------|------|
-| merged_video | VIDEO | 合并后的视频 |
+| merged_images | IMAGE | 合并后的帧张量 |
 | total_frames | INT | 总帧数 |
 
 ---
@@ -121,46 +118,52 @@
 
 ## 工作流示例
 
-### 方案：配合 for 循环节点分段处理
+### 配合 VHS Load Video 和 for 循环节点
 
 使用 `comfyui-easy-use` 插件的 `forLoopStart` 和 `forLoopEnd` 节点。
 
 ```
-Load Video → Video Segment Info → forLoopStart(total)
-     │                               │
-     │                          index (0,1,2...)
-     │                               │
-     └──→ Get Video Segment ←────────┘
-                │
-          video_segment
-                │
-                ▼
-          [放大处理节点]
-                │
-             IMAGE
-                │
-                ▼
-          Image Collect ←──┐
-          (accumulated) ────┘ (传给下一次迭代)
-                │
-          forLoopEnd
-                │
-             value1
-                │
-                ▼
-          VHS_VideoCombine
-                │
-                ▼
-           最终视频
+VHS Load Video ──┬──→ Video Segment Info ──→ forLoopStart(total)
+   (image输出)   │            │                       │
+                 │            │ total_segments        │ index
+                 │            ▼                       ▼
+                 │     forLoopStart            forLoopStart
+                 │            │                       │
+                 │            │ index                 │
+                 │            ▼                       │
+                 └──→ Get Video Segment ←────────────┘
+                           │
+                     segment_images
+                           │
+                           ▼
+                     [放大处理节点]
+                           │
+                        IMAGE
+                           │
+                           ▼
+                     Image Collect ←──┐
+                     (accumulated) ────┘ (传给下一次迭代)
+                           │
+                     forLoopEnd
+                           │
+                        value1
+                           │
+                           ▼
+                     VHS_VideoCombine
+                           │
+                           ▼
+                      最终视频
 ```
 
 ### 关键连接
 
-1. `Video Segment Info` 的 `total_segments` → `forLoopStart` 的 `total`
-2. `forLoopStart` 的 `index` → `Get Video Segment` 的 `segment_index`
-3. `Get Video Segment` 的 `video_segment` → 放大处理节点
-4. `Image Collect` 的 `accumulated` → `forLoopEnd` 的 `initial_value1`
-5. `forLoopEnd` 的 `value1` → `VHS_VideoCombine` 的 `images`
+1. `VHS Load Video` 的 **image** 输出 → `Video Segment Info` 的 **images** 输入
+2. `Video Segment Info` 的 **total_segments** → `forLoopStart` 的 **total**
+3. `forLoopStart` 的 **index** → `Get Video Segment` 的 **segment_index**
+4. `VHS Load Video` 的 **image** 输出 → `Get Video Segment` 的 **images** 输入
+5. `Get Video Segment` 的 **segment_images** → 放大处理节点
+6. `Image Collect` 的 **accumulated** → `forLoopEnd` 的 **initial_value1**
+7. `forLoopEnd` 的 **value1** → `VHS_VideoCombine` 的 **images**
 
 ---
 
@@ -191,17 +194,6 @@ Load Video → Video Segment Info → forLoopStart(total)
 
 ---
 
-## 内存优化
-
-`Get Video Segment` 节点支持**懒加载裁剪**：
-
-- 从 `Load Video` 节点加载的视频（`VideoFromFile` 类型）只解码当前分段，不加载整个视频
-- 对于已在内存中的视频，回退到张量切片
-
-这确保了处理长视频时不会因为一次性加载全部帧而爆内存。
-
----
-
 ## 应用场景
 
 - 长视频高清放大（分段处理避免显存不足）
@@ -216,12 +208,11 @@ Load Video → Video Segment Info → forLoopStart(total)
 1. 需要安装 `comfyui-easy-use` 插件才能使用循环节点
 2. 循环次数过多时注意 ComfyUI 的执行时间限制
 3. 分段时长建议根据显存大小调整，5秒/段是常用配置
+4. VHS Load Video 需要手动设置 fps 参数，或者用 `VHS Video Info` 节点获取帧率
 
 ---
 
 ## 版本
 
+- v1.1 - 改用 IMAGE 类型，兼容 VHS Load Video
 - v1.0 - 初始版本
-  - 视频分段基础功能
-  - 懒加载裁剪支持
-  - 图像收集节点
