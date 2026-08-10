@@ -1,5 +1,7 @@
 # ComfyUI Video Split Nodes
 
+[English Documentation](README_EN.md)
+
 视频分段节点，用于将长视频按时长或帧数分割成多个片段，配合循环节点实现分段处理后再合并。
 
 ## 安装
