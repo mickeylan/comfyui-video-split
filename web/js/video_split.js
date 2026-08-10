@@ -80,7 +80,7 @@ app.registerExtension({
                 // 始终绘制 ? 按钮
                 
                 var x = node.pos[0] + node.size[0] - 15;
-                var y = node.pos[1] - 10;
+                var y = node.pos[1] - 15;  // 标题栏上部
                 
                 ctx.save();
                 ctx.font = "bold 12px Arial";
@@ -108,8 +108,9 @@ app.registerExtension({
             
             if (!node || !HELP_NODES.has(node.type)) return;
             
-            var x = node.pos[0] + node.size[0] - 18;
-            var y = node.pos[1] + 10;
+            // 点击检测位置必须与绘制位置一致！
+            var x = node.pos[0] + node.size[0] - 15;
+            var y = node.pos[1] - 15;
             var dx = pos[0] - x;
             var dy = pos[1] - y;
             
