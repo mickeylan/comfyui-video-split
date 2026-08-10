@@ -1,97 +1,50 @@
 """
 Video Split Nodes - Split video into segments by duration or frame count.
-
-Supports both:
-- IMAGE input (from VHS Load Video) - frames already in memory
-- VIDEO input (from ComfyUI native Load Video) - lazy loading support
 """
 import torch
-from fractions import Fraction
-from typing import Optional, Tuple, Union
-
-from comfy_api.latest import io, ui, InputImpl, Types
 
 
-def _get_video_meta(video_or_images) -> Tuple[int, Fraction]:
-    """Get frame count and frame rate from video or images."""
-    if isinstance(video_or_images, torch.Tensor):
-        # IMAGE type - tensor of frames
-        return video_or_images.shape[0], Fraction(24, 1)  # Default 24fps for images
-    
-    # VIDEO type
-    if hasattr(video_or_images, 'get_frame_count') and hasattr(video_or_images, 'get_frame_rate'):
-        return int(video_or_images.get_frame_count()), video_or_images.get_frame_rate()
-    
-    # Fallback
-    if hasattr(video_or_images, 'get_components'):
-        components = video_or_images.get_components()
-        return components.images.shape[0], components.frame_rate
-    
-    raise TypeError(f"Unsupported type: {type(video_or_images)}")
-
-
-def _extract_segment(video_or_images, start_frame: int, end_frame: int, frame_rate: Fraction):
-    """Extract a segment from video or images."""
-    if isinstance(video_or_images, torch.Tensor):
-        # IMAGE type - direct slice
-        return video_or_images[start_frame:end_frame]
-    
-    # VIDEO type - try lazy trim
-    fps = float(frame_rate)
-    segment_frame_count = end_frame - start_frame
-    
-    if hasattr(video_or_images, 'as_trimmed'):
-        start_time = start_frame / fps
-        duration = segment_frame_count / fps
-        try:
-            trimmed = video_or_images.as_trimmed(start_time=start_time, duration=duration, strict_duration=False)
-            if trimmed is not None:
-                return trimmed
-        except Exception:
-            pass
-    
-    # Fallback: extract from tensor
-    if hasattr(video_or_images, 'get_components'):
-        components = video_or_images.get_components()
-        return components.images[start_frame:end_frame]
-    
-    raise TypeError("Cannot extract segment from this type")
-
-
-class VideoSegmentInfo(io.ComfyNode):
+class VideoSegmentInfo:
     """
-    Calculate segment information for video splitting.
-    Works with both IMAGE (from VHS) and VIDEO (from ComfyUI native) inputs.
+    计算视频分段信息，供循环节点使用。
     """
     @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="VideoSegmentInfo",
-            display_name="Video Segment Info",
-            category="video/split",
-            inputs=[
-                io.Image.Input("images", tooltip="Frames from VHS Load Video (IMAGE type)"),
-                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=1.0,
-                    tooltip="Frame rate of the video"),
-                io.Combo.Input("split_mode", options=["by_duration", "by_frames"], default="by_duration"),
-                io.Float.Input("segment_duration", default=5.0, min=0.1, max=3600.0, step=0.1,
-                    tooltip="Duration of each segment in seconds"),
-                io.Int.Input("segment_frames", default=120, min=1, max=100000, step=1,
-                    tooltip="Number of frames per segment"),
-            ],
-            outputs=[
-                io.Int.Output("total_segments"),
-                io.Int.Output("total_frames"),
-                io.Int.Output("frames_per_segment"),
-            ],
-            description="Calculate segment information. Connect images from VHS Load Video.",
-        )
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE", {"tooltip": "帧张量，连接 VHS Load Video 的 image 输出"}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 1.0,
+                    "tooltip": "视频帧率"}),
+                "split_mode": (["by_duration", "by_frames"], {"default": "by_duration",
+                    "tooltip": "分段模式：by_duration 按时长，by_frames 按帧数"}),
+                "segment_duration": ("FLOAT", {"default": 5.0, "min": 0.1, "max": 3600.0, "step": 0.1,
+                    "tooltip": "每段时长（秒）"}),
+                "segment_frames": ("INT", {"default": 120, "min": 1, "max": 100000, "step": 1,
+                    "tooltip": "每段帧数"}),
+            },
+        }
 
-    @classmethod
-    def execute(cls, images: torch.Tensor, fps: float, split_mode: str, 
+    RETURN_TYPES = ("INT", "INT", "INT")
+    RETURN_NAMES = ("total_segments", "total_frames", "frames_per_segment")
+    FUNCTION = "execute"
+    CATEGORY = "video/split"
+    DESCRIPTION = """<div id=VHS_shortdesc>计算视频分段数量，配合循环节点使用</div>
+<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
+<div vhs_title="images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">images: 帧张量，连接 VHS Load Video 的 image 输出</div></div>
+<div vhs_title="fps" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">fps: 视频帧率，用于计算按时长分段的帧数</div></div>
+<div vhs_title="split_mode" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">split_mode: 分段模式：by_duration 按时长，by_frames 按帧数</div></div>
+<div vhs_title="segment_duration" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_duration: 每段时长（秒）</div></div>
+<div vhs_title="segment_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_frames: 每段帧数</div></div>
+</div></div>
+<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
+<div vhs_title="total_segments" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_segments: 总分段数，连接 forLoopStart 的 total</div></div>
+<div vhs_title="total_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_frames: 视频总帧数</div></div>
+<div vhs_title="frames_per_segment" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">frames_per_segment: 每段帧数，连接 GetVideoSegment</div></div>
+</div></div>"""
+
+    def execute(self, images: torch.Tensor, fps: float, split_mode: str, 
                 segment_duration: float, segment_frames: int) -> tuple:
         total_frames = images.shape[0]
-        frame_rate = Fraction(int(fps), 1)
 
         if split_mode == "by_duration":
             frames_per_seg = max(1, int(segment_duration * fps))
@@ -103,34 +56,39 @@ class VideoSegmentInfo(io.ComfyNode):
         return (total_segments, total_frames, frames_per_seg)
 
 
-class GetVideoSegment(io.ComfyNode):
+class GetVideoSegment:
     """
-    Extract a specific segment from video frames by index.
-    Connect to VHS Load Video's image output.
+    按索引提取单个视频分段。
     """
     @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="GetVideoSegment",
-            display_name="Get Video Segment",
-            category="video/split",
-            inputs=[
-                io.Image.Input("images", tooltip="Frames from VHS Load Video"),
-                io.Int.Input("segment_index", default=0, min=0, max=10000, step=1,
-                    tooltip="Index of segment to extract (0-based)"),
-                io.Int.Input("frames_per_segment", default=120, min=1, max=100000, step=1,
-                    tooltip="Frames per segment (from VideoSegmentInfo)"),
-            ],
-            outputs=[
-                io.Image.Output("segment_images"),
-                io.Int.Output("segment_frame_count"),
-                io.Int.Output("start_frame"),
-            ],
-            description="Extract a video segment by index from frame tensor.",
-        )
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE", {"tooltip": "帧张量，连接 VHS Load Video 的 image 输出"}),
+                "segment_index": ("INT", {"default": 0, "min": 0, "max": 10000, "step": 1,
+                    "tooltip": "分段索引（从0开始），连接 forLoopStart 的 index"}),
+                "frames_per_segment": ("INT", {"default": 120, "min": 1, "max": 100000, "step": 1,
+                    "tooltip": "每段帧数，来自 VideoSegmentInfo"}),
+            },
+        }
 
-    @classmethod
-    def execute(cls, images: torch.Tensor, segment_index: int, frames_per_segment: int) -> tuple:
+    RETURN_TYPES = ("IMAGE", "INT", "INT")
+    RETURN_NAMES = ("segment_images", "segment_frame_count", "start_frame")
+    FUNCTION = "execute"
+    CATEGORY = "video/split"
+    DESCRIPTION = """<div id=VHS_shortdesc>按索引提取单个视频分段</div>
+<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
+<div vhs_title="images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">images: 帧张量，连接 VHS Load Video（与 VideoSegmentInfo 同源）</div></div>
+<div vhs_title="segment_index" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_index: 分段索引（从0开始），连接 forLoopStart 的 index</div></div>
+<div vhs_title="frames_per_segment" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">frames_per_segment: 每段帧数，来自 VideoSegmentInfo</div></div>
+</div></div>
+<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
+<div vhs_title="segment_images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_images: 当前分段的帧张量</div></div>
+<div vhs_title="segment_frame_count" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_frame_count: 当前分段帧数</div></div>
+<div vhs_title="start_frame" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">start_frame: 起始帧索引</div></div>
+</div></div>"""
+
+    def execute(self, images: torch.Tensor, segment_index: int, frames_per_segment: int) -> tuple:
         total_frames = images.shape[0]
 
         start_frame = segment_index * frames_per_segment
@@ -145,36 +103,38 @@ class GetVideoSegment(io.ComfyNode):
         return (segment_images, segment_frame_count, start_frame)
 
 
-class VideoSplitMultiple(io.ComfyNode):
+class VideoSplitMultiple:
     """
-    Split video frames into all segments at once.
-    Returns a list of frame tensors.
+    一次性分割视频为所有分段。
     """
     @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="VideoSplitMultiple",
-            display_name="Video Split (Multiple)",
-            category="video/split",
-            inputs=[
-                io.Image.Input("images", tooltip="Frames from VHS Load Video"),
-                io.Combo.Input("split_mode", options=["by_duration", "by_frames"], default="by_duration"),
-                io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=1.0,
-                    tooltip="Frame rate"),
-                io.Float.Input("segment_duration", default=5.0, min=0.1, max=3600.0, step=0.1,
-                    tooltip="Duration of each segment in seconds"),
-                io.Int.Input("segment_frames", default=120, min=1, max=100000, step=1,
-                    tooltip="Number of frames per segment"),
-            ],
-            outputs=[
-                io.Image.Output("segments", is_output_list=True),
-                io.Int.Output("total_segments"),
-            ],
-            description="Split video into all segments. Returns a list of frame tensors.",
-        )
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE", {"tooltip": "帧张量，连接 VHS Load Video"}),
+                "split_mode": (["by_duration", "by_frames"], {"default": "by_duration"}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 1.0}),
+                "segment_duration": ("FLOAT", {"default": 5.0, "min": 0.1, "max": 3600.0, "step": 0.1}),
+                "segment_frames": ("INT", {"default": 120, "min": 1, "max": 100000, "step": 1}),
+            },
+        }
 
-    @classmethod
-    def execute(cls, images: torch.Tensor, split_mode: str, fps: float,
+    RETURN_TYPES = ("IMAGE", "INT")
+    RETURN_NAMES = ("segments", "total_segments")
+    OUTPUT_IS_LIST = (True, False)
+    FUNCTION = "execute"
+    CATEGORY = "video/split"
+    DESCRIPTION = """<div id=VHS_shortdesc>一次性分割视频为所有分段</div>
+<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
+<div vhs_title="images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">images: 帧张量</div></div>
+<div vhs_title="fps" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">fps: 帧率</div></div>
+</div></div>
+<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
+<div vhs_title="segments" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segments: 分段列表</div></div>
+<div vhs_title="total_segments" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_segments: 总分段数</div></div>
+</div></div>"""
+
+    def execute(self, images: torch.Tensor, split_mode: str, fps: float,
                 segment_duration: float, segment_frames: int) -> tuple:
         total_frames = images.shape[0]
 
@@ -195,29 +155,33 @@ class VideoSplitMultiple(io.ComfyNode):
         return (segments, total_segments)
 
 
-class MergeVideoSegments(io.ComfyNode):
+class MergeVideoSegments:
     """
-    Merge multiple video segments (frame tensors) back into a single video.
+    合并多个视频分段。
     """
     @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="MergeVideoSegments",
-            display_name="Merge Video Segments",
-            category="video/split",
-            is_input_list=True,
-            inputs=[
-                io.Image.Input("segments", tooltip="Video segments to merge"),
-            ],
-            outputs=[
-                io.Image.Output("merged_images"),
-                io.Int.Output("total_frames"),
-            ],
-            description="Merge video segments back into a single frame tensor.",
-        )
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "segments": ("IMAGE", {"tooltip": "要合并的帧张量分段"}),
+            },
+        }
 
-    @classmethod
-    def execute(cls, segments: list) -> tuple:
+    RETURN_TYPES = ("IMAGE", "INT")
+    RETURN_NAMES = ("merged_images", "total_frames")
+    INPUT_IS_LIST = True
+    FUNCTION = "execute"
+    CATEGORY = "video/split"
+    DESCRIPTION = """<div id=VHS_shortdesc>将多个分段合并为单个视频</div>
+<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
+<div vhs_title="segments" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segments: 要合并的分段列表</div></div>
+</div></div>
+<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
+<div vhs_title="merged_images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">merged_images: 合并后的帧张量</div></div>
+<div vhs_title="total_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_frames: 总帧数</div></div>
+</div></div>"""
+
+    def execute(self, segments: list) -> tuple:
         if not segments:
             raise ValueError("No video segments provided")
 
@@ -227,30 +191,36 @@ class MergeVideoSegments(io.ComfyNode):
         return (merged, total_frames)
 
 
-class ImageCollect(io.ComfyNode):
+class ImageCollect:
     """
-    Collect images in a for loop.
-    Pass 'accumulated' output to next iteration's 'images' input.
+    在循环中收集图像帧。
     """
     @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="ImageCollect",
-            display_name="Image Collect",
-            category="video/split",
-            inputs=[
-                io.Image.Input("new_images", tooltip="Images to add (from this iteration)"),
-                io.Image.Input("images", optional=True, tooltip="Previously accumulated images"),
-            ],
-            outputs=[
-                io.Image.Output("accumulated"),
-                io.Int.Output("total_frames"),
-            ],
-            description="Collect images in a for loop. Pass 'accumulated' to next iteration's 'images'.",
-        )
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "new_images": ("IMAGE", {"tooltip": "当前迭代要添加的图像帧"}),
+            },
+            "optional": {
+                "images": ("IMAGE", {"tooltip": "之前累积的图像帧，第一次迭代留空"}),
+            },
+        }
 
-    @classmethod
-    def execute(cls, new_images: torch.Tensor, images: torch.Tensor = None) -> tuple:
+    RETURN_TYPES = ("IMAGE", "INT")
+    RETURN_NAMES = ("accumulated", "total_frames")
+    FUNCTION = "execute"
+    CATEGORY = "video/split"
+    DESCRIPTION = """<div id=VHS_shortdesc>在循环中收集图像帧</div>
+<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
+<div vhs_title="new_images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">new_images: 当前迭代要添加的图像帧</div></div>
+<div vhs_title="images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">images: （可选）之前累积的图像帧。第一次迭代留空</div></div>
+</div></div>
+<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
+<div vhs_title="accumulated" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">accumulated: 累积的帧，连接 forLoopEnd</div></div>
+<div vhs_title="total_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_frames: 当前总帧数</div></div>
+</div></div>"""
+
+    def execute(self, new_images: torch.Tensor, images: torch.Tensor = None) -> tuple:
         if images is None:
             return (new_images, new_images.shape[0])
 
@@ -258,7 +228,7 @@ class ImageCollect(io.ComfyNode):
         return (accumulated, accumulated.shape[0])
 
 
-# Legacy node mappings
+# Node mappings
 NODE_CLASS_MAPPINGS = {
     "VideoSegmentInfo": VideoSegmentInfo,
     "GetVideoSegment": GetVideoSegment,
