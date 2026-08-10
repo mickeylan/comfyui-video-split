@@ -194,6 +194,7 @@ class MergeVideoSegments:
 class ImageCollect:
     """
     在循环中收集图像帧。
+    支持智能类型检测：可处理张量或列表类型的累积输入。
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -220,10 +221,33 @@ class ImageCollect:
 <div vhs_title="total_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_frames: 当前总帧数</div></div>
 </div></div>"""
 
-    def execute(self, new_images: torch.Tensor, images: torch.Tensor = None) -> tuple:
+    def execute(self, new_images: torch.Tensor, images=None) -> tuple:
+        """
+        智能收集图像帧：
+        - images 为 None: 返回 new_images
+        - images 为张量: 合并张量
+        - images 为列表: 合并列表中所有张量
+        """
+        # 处理 new_images 可能是列表的情况
+        if isinstance(new_images, list):
+            new_images = new_images[0] if len(new_images) == 1 else torch.cat(new_images, dim=0)
+        
+        # 第一次迭代，没有累积的图像
         if images is None:
             return (new_images, new_images.shape[0])
-
+        
+        # images 是张量，直接合并
+        if isinstance(images, torch.Tensor):
+            accumulated = torch.cat([images, new_images], dim=0)
+            return (accumulated, accumulated.shape[0])
+        
+        # images 是列表，合并所有张量
+        if isinstance(images, list):
+            all_tensors = images + [new_images]
+            accumulated = torch.cat(all_tensors, dim=0)
+            return (accumulated, accumulated.shape[0])
+        
+        # 未知类型，尝试直接合并
         accumulated = torch.cat([images, new_images], dim=0)
         return (accumulated, accumulated.shape[0])
 
