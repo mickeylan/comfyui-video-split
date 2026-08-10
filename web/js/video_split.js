@@ -77,7 +77,7 @@ app.registerExtension({
             for (var i = 0; i < nodes.length; i++) {
                 var node = nodes[i];
                 if (!HELP_NODES.has(node.type)) continue;
-                if (!node.is_selected && !node.pointerOver) continue;
+                // 始终绘制 ? 按钮
                 
                 var x = node.pos[0] + node.size[0] - 20;
                 var y = node.pos[1] - LiteGraph.NODE_TITLE_HEIGHT + 6;
