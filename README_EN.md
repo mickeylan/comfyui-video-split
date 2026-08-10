@@ -104,11 +104,15 @@ Merge multiple video segments into a single video.
 
 Collect image frames in a for loop.
 
+**Features:**
+- ✅ Smart type detection: automatically identifies tensor or list inputs
+- ✅ Compatible with different loop node output types
+
 **Inputs:**
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | new_images | IMAGE | Images to add from current iteration |
-| images | IMAGE (optional) | Previously accumulated images (from previous iteration's accumulated) |
+| images | IMAGE (optional) | Previously accumulated images. Leave empty for first iteration |
 
 **Outputs:**
 | Output | Type | Description |
