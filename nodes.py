@@ -98,7 +98,7 @@ class GetVideoSegment:
             raise ValueError(f"Segment index {segment_index} out of range. Video has {total_frames} frames.")
 
         segment_frame_count = end_frame - start_frame
-        segment_images = images[start_frame:end_frame]
+        segment_images = images[start_frame:end_frame].clone()  # clone 确保独立副本
 
         return (segment_images, segment_frame_count, start_frame)
 
