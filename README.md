@@ -184,8 +184,21 @@ VHS Load Video ─────┤
 4. `Video Segment Info` 的 **frames_per_segment** → `Get Video Segment` 的 **frames_per_segment**
 5. `forLoopStart` 的 **index** → `Get Video Segment` 的 **segment_index**
 6. `Get Video Segment` 的 **segment_images** → 放大处理节点
-7. `Image Collect` 的 **accumulated** → `forLoopEnd` 的 **initial_value1**
-8. `forLoopEnd` 的 **value1** → `VHS_VideoCombine` 的 **images**
+7. `forLoopStart` 的 **value1** → `Image Collect` 的 **images**（⚠️ 必须连 value1，不是 initial_value1）
+8. `Image Collect` 的 **accumulated** → `forLoopEnd` 的 **initial_value1**
+9. `forLoopEnd` 的 **value1** → `VHS_VideoCombine` 的 **images**
+
+### ⚠️ 最容易出错的连线
+
+**错误**：`forLoopStart.initial_value1` → `Image Collect.images`
+- 结果：每次迭代都收到空值，最后只保存最后一帧
+
+**正确**：`forLoopStart.value1` → `Image Collect.images`
+- 结果：正确传递累积结果
+
+**原因**：
+- `initial_value1` = 循环开始时的初始值（第一次迭代为空）
+- `value1` = 传递给循环内的当前值（包括累积结果）
 
 ---
 

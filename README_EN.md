@@ -184,8 +184,21 @@ VHS Load Video ─────┤
 4. `Video Segment Info` **frames_per_segment** → `Get Video Segment` **frames_per_segment**
 5. `forLoopStart` **index** → `Get Video Segment` **segment_index**
 6. `Get Video Segment` **segment_images** → Upscale processing node
-7. `Image Collect` **accumulated** → `forLoopEnd` **initial_value1**
-8. `forLoopEnd` **value1** → `VHS_VideoCombine` **images**
+7. `forLoopStart` **value1** → `Image Collect` **images** (⚠️ must connect value1, not initial_value1)
+8. `Image Collect` **accumulated** → `forLoopEnd` **initial_value1**
+9. `forLoopEnd` **value1** → `VHS_VideoCombine` **images**
+
+### ⚠️ Most Common Wiring Mistake
+
+**Wrong**: `forLoopStart.initial_value1` → `Image Collect.images`
+- Result: Each iteration receives empty value, only last frame saved
+
+**Correct**: `forLoopStart.value1` → `Image Collect.images`
+- Result: Accumulated results passed correctly
+
+**Reason**:
+- `initial_value1` = Initial value when loop starts (empty on first iteration)
+- `value1` = Current value passed to loop body (includes accumulated results)
 
 ---
 
