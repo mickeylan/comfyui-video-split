@@ -4,19 +4,19 @@ import { app } from "../../../scripts/app.js";
  * ComfyUI Video Split Extension
  */
 
-// 帮助文本
+// 帮助文本 (HTML格式)
 const helpTexts = {
     "VideoSegmentInfo": {
-        "en": "Calculate segment information for video splitting\n\nInputs:\n  images: Frame tensor from VHS Load Video\n  fps: Video frame rate\n  split_mode: by_duration or by_frames\n  segment_duration: Duration per segment (seconds)\n  segment_frames: Frames per segment\n\nOutputs:\n  total_segments -> forLoopStart.total\n  total_frames: Total frame count\n  frames_per_segment -> GetVideoSegment",
-        "zh": "计算视频分段信息，配合循环节点使用\n\n输入:\n  images: 帧张量，连接 VHS Load Video\n  fps: 视频帧率\n  split_mode: by_duration 按时长 / by_frames 按帧数\n  segment_duration: 每段时长（秒）\n  segment_frames: 每段帧数\n\n输出:\n  total_segments -> forLoopStart.total\n  total_frames: 视频总帧数\n  frames_per_segment -> GetVideoSegment"
+        "en": "<b>Calculate segment information for video splitting</b><br><br><b>Inputs:</b><br>• <b>images</b>: Frame tensor from VHS Load Video<br>• <b>fps</b>: Video frame rate<br>• <b>split_mode</b>: by_duration or by_frames<br>• <b>segment_duration</b>: Duration per segment (seconds)<br>• <b>segment_frames</b>: Frames per segment<br><br><b>Outputs:</b><br>• <b>total_segments</b> → forLoopStart.total<br>• <b>total_frames</b>: Total frame count<br>• <b>frames_per_segment</b> → GetVideoSegment",
+        "zh": "<b>计算视频分段信息，配合循环节点使用</b><br><br><b>输入:</b><br>• <b>images</b>: 帧张量，连接 VHS Load Video<br>• <b>fps</b>: 视频帧率<br>• <b>split_mode</b>: by_duration 按时长 / by_frames 按帧数<br>• <b>segment_duration</b>: 每段时长（秒）<br>• <b>segment_frames</b>: 每段帧数<br><br><b>输出:</b><br>• <b>total_segments</b> → forLoopStart.total<br>• <b>total_frames</b>: 视频总帧数<br>• <b>frames_per_segment</b> → GetVideoSegment"
     },
     "GetVideoSegment": {
-        "en": "Extract a video segment by index\n\nInputs:\n  images: Frame tensor (same source as VideoSegmentInfo)\n  segment_index: Segment index (0-based) -> forLoopStart.index\n  frames_per_segment: From VideoSegmentInfo\n\nOutputs:\n  segment_images: Current segment's frame tensor\n  segment_frame_count: Frame count in this segment\n  start_frame: Starting frame index",
-        "zh": "按索引提取单个视频分段\n\n输入:\n  images: 帧张量（与 VideoSegmentInfo 同源）\n  segment_index: 分段索引（从0开始）-> forLoopStart.index\n  frames_per_segment: 来自 VideoSegmentInfo\n\n输出:\n  segment_images: 当前分段的帧张量\n  segment_frame_count: 当前分段帧数\n  start_frame: 起始帧索引"
+        "en": "<b>Extract a video segment by index</b><br><br><b>Inputs:</b><br>• <b>images</b>: Frame tensor (same source as VideoSegmentInfo)<br>• <b>segment_index</b>: Segment index (0-based) → forLoopStart.index<br>• <b>frames_per_segment</b>: From VideoSegmentInfo<br><br><b>Outputs:</b><br>• <b>segment_images</b>: Current segment's frame tensor<br>• <b>segment_frame_count</b>: Frame count in this segment<br>• <b>start_frame</b>: Starting frame index",
+        "zh": "<b>按索引提取单个视频分段</b><br><br><b>输入:</b><br>• <b>images</b>: 帧张量（与 VideoSegmentInfo 同源）<br>• <b>segment_index</b>: 分段索引（从0开始）→ forLoopStart.index<br>• <b>frames_per_segment</b>: 来自 VideoSegmentInfo<br><br><b>输出:</b><br>• <b>segment_images</b>: 当前分段的帧张量<br>• <b>segment_frame_count</b>: 当前分段帧数<br>• <b>start_frame</b>: 起始帧索引"
     },
     "ImageCollect": {
-        "en": "Collect images in a for loop\n\nInputs:\n  new_images: Images to add from current iteration\n  images: (Optional) Previous accumulated images\n\nOutputs:\n  accumulated -> forLoopEnd.initial_value1\n  total_frames: Current total frame count\n\nFeatures:\n  Smart type detection (tensor or list)",
-        "zh": "在循环中收集图像帧\n\n输入:\n  new_images: 当前迭代要添加的图像帧\n  images: (可选) 之前累积的图像帧\n\n输出:\n  accumulated -> forLoopEnd.initial_value1\n  total_frames: 当前总帧数\n\n特性:\n  智能类型检测（张量或列表）"
+        "en": "<b>Collect images in a for loop</b><br><br><b>Inputs:</b><br>• <b>new_images</b>: Images to add from current iteration<br>• <b>images</b>: (Optional) Previous accumulated images<br><br><b>Outputs:</b><br>• <b>accumulated</b> → forLoopEnd.initial_value1<br>• <b>total_frames</b>: Current total frame count<br><br><b>Features:</b><br>• Smart type detection (tensor or list)",
+        "zh": "<b>在循环中收集图像帧</b><br><br><b>输入:</b><br>• <b>new_images</b>: 当前迭代要添加的图像帧<br>• <b>images</b>: (可选) 之前累积的图像帧<br><br><b>输出:</b><br>• <b>accumulated</b> → forLoopEnd.initial_value1<br>• <b>total_frames</b>: 当前总帧数<br><br><b>特性:</b><br>• 智能类型检测（张量或列表）"
     }
 };
 
@@ -31,11 +31,11 @@ function getLang() {
 function showHelp(node, text) {
     if (!helpPanel) {
         helpPanel = document.createElement("div");
-        helpPanel.style.cssText = "position:absolute;left:-5000px;max-width:380px;padding:12px;background:#222;color:#eee;font-size:13px;line-height:1.6;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.6);z-index:1000;white-space:pre-wrap;font-family:-apple-system,sans-serif;pointer-events:none;";
+        helpPanel.style.cssText = "position:absolute;left:-5000px;max-width:380px;padding:12px;background:#222;color:#eee;font-size:13px;line-height:1.6;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.6);z-index:1000;font-family:-apple-system,sans-serif;pointer-events:none;";
         document.body.appendChild(helpPanel);
     }
     
-    helpPanel.textContent = text;
+    helpPanel.innerHTML = text;
     helpPanel._node = node;
     
     var scale = app.canvas.ds.scale;
