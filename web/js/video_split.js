@@ -79,8 +79,8 @@ app.registerExtension({
                 if (!HELP_NODES.has(node.type)) continue;
                 // 始终绘制 ? 按钮
                 
-                var x = node.pos[0] + node.size[0] - 20;
-                var y = node.pos[1] - LiteGraph.NODE_TITLE_HEIGHT + 6;
+                var x = node.pos[0] + node.size[0] - 18;
+                var y = node.pos[1] + 10;
                 
                 ctx.save();
                 ctx.font = "bold 12px Arial";
@@ -108,8 +108,8 @@ app.registerExtension({
             
             if (!node || !HELP_NODES.has(node.type)) return;
             
-            var x = node.pos[0] + node.size[0] - 20;
-            var y = node.pos[1] - LiteGraph.NODE_TITLE_HEIGHT + 6;
+            var x = node.pos[0] + node.size[0] - 18;
+            var y = node.pos[1] + 10;
             var dx = pos[0] - x;
             var dy = pos[1] - y;
             
