@@ -269,4 +269,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ImageCollect": "Image Collect",
 }
 
-WEB_DIRECTORY = "."
+WEB_DIRECTORY = "./web"
