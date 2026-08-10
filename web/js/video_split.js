@@ -219,8 +219,18 @@ app.registerExtension({
     name: "comfyui-video-split",
     
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        // 设置节点颜色
-        if (nodeData.name.includes("Video") || nodeData.name.includes("Image Collect")) {
+        const nodeId = nodeData.name;
+        const lang = getLangCode(getLocale());
+        
+        // 为我们的节点设置帮助描述
+        if (LANGUAGES['en'][nodeId] || LANGUAGES['zh'][nodeId]) {
+            // 直接设置 _DESCRIPTION 属性
+            const desc = buildNodeDescription(nodeId, lang);
+            if (desc) {
+                nodeType._DESCRIPTION = desc;
+            }
+            
+            // 设置节点颜色
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
@@ -243,6 +253,6 @@ app.registerExtension({
         // 初始化时更新一次
         setTimeout(updateDescriptions, 1000);
         
-        console.log("[Video Split] Extension loaded with i18n support");
+        console.log("[Video Split] Extension loaded with i18n help support");
     },
 });

@@ -299,4 +299,7 @@ def format_descriptions(nodes):
     for node_id in NODE_DOCS:
         if node_id in nodes:
             # 后端设置默认英文说明，前端可以根据语言切换
-            nodes[node_id].DESCRIPTION = build_description(node_id, "en")
+            desc = build_description(node_id, "en")
+            if desc:
+                # 新版 API 使用 _DESCRIPTION 属性
+                nodes[node_id]._DESCRIPTION = desc
