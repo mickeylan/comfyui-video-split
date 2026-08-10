@@ -28,19 +28,6 @@ class VideoSegmentInfo:
     RETURN_NAMES = ("total_segments", "total_frames", "frames_per_segment")
     FUNCTION = "execute"
     CATEGORY = "video/split"
-    DESCRIPTION = """<div id=VHS_shortdesc>计算视频分段数量，配合循环节点使用</div>
-<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
-<div vhs_title="images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">images: 帧张量，连接 VHS Load Video 的 image 输出</div></div>
-<div vhs_title="fps" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">fps: 视频帧率，用于计算按时长分段的帧数</div></div>
-<div vhs_title="split_mode" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">split_mode: 分段模式：by_duration 按时长，by_frames 按帧数</div></div>
-<div vhs_title="segment_duration" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_duration: 每段时长（秒）</div></div>
-<div vhs_title="segment_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_frames: 每段帧数</div></div>
-</div></div>
-<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
-<div vhs_title="total_segments" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_segments: 总分段数，连接 forLoopStart 的 total</div></div>
-<div vhs_title="total_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_frames: 视频总帧数</div></div>
-<div vhs_title="frames_per_segment" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">frames_per_segment: 每段帧数，连接 GetVideoSegment</div></div>
-</div></div>"""
 
     def execute(self, images: torch.Tensor, fps: float, split_mode: str, 
                 segment_duration: float, segment_frames: int) -> tuple:
@@ -76,17 +63,6 @@ class GetVideoSegment:
     RETURN_NAMES = ("segment_images", "segment_frame_count", "start_frame")
     FUNCTION = "execute"
     CATEGORY = "video/split"
-    DESCRIPTION = """<div id=VHS_shortdesc>按索引提取单个视频分段</div>
-<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
-<div vhs_title="images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">images: 帧张量，连接 VHS Load Video（与 VideoSegmentInfo 同源）</div></div>
-<div vhs_title="segment_index" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_index: 分段索引（从0开始），连接 forLoopStart 的 index</div></div>
-<div vhs_title="frames_per_segment" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">frames_per_segment: 每段帧数，来自 VideoSegmentInfo</div></div>
-</div></div>
-<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
-<div vhs_title="segment_images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_images: 当前分段的帧张量</div></div>
-<div vhs_title="segment_frame_count" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segment_frame_count: 当前分段帧数</div></div>
-<div vhs_title="start_frame" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">start_frame: 起始帧索引</div></div>
-</div></div>"""
 
     def execute(self, images: torch.Tensor, segment_index: int, frames_per_segment: int) -> tuple:
         total_frames = images.shape[0]
@@ -98,7 +74,7 @@ class GetVideoSegment:
             raise ValueError(f"Segment index {segment_index} out of range. Video has {total_frames} frames.")
 
         segment_frame_count = end_frame - start_frame
-        segment_images = images[start_frame:end_frame].clone()  # clone 确保独立副本
+        segment_images = images[start_frame:end_frame].clone()
 
         return (segment_images, segment_frame_count, start_frame)
 
@@ -124,15 +100,6 @@ class VideoSplitMultiple:
     OUTPUT_IS_LIST = (True, False)
     FUNCTION = "execute"
     CATEGORY = "video/split"
-    DESCRIPTION = """<div id=VHS_shortdesc>一次性分割视频为所有分段</div>
-<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
-<div vhs_title="images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">images: 帧张量</div></div>
-<div vhs_title="fps" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">fps: 帧率</div></div>
-</div></div>
-<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
-<div vhs_title="segments" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segments: 分段列表</div></div>
-<div vhs_title="total_segments" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_segments: 总分段数</div></div>
-</div></div>"""
 
     def execute(self, images: torch.Tensor, split_mode: str, fps: float,
                 segment_duration: float, segment_frames: int) -> tuple:
@@ -172,14 +139,6 @@ class MergeVideoSegments:
     INPUT_IS_LIST = True
     FUNCTION = "execute"
     CATEGORY = "video/split"
-    DESCRIPTION = """<div id=VHS_shortdesc>将多个分段合并为单个视频</div>
-<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
-<div vhs_title="segments" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">segments: 要合并的分段列表</div></div>
-</div></div>
-<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
-<div vhs_title="merged_images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">merged_images: 合并后的帧张量</div></div>
-<div vhs_title="total_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_frames: 总帧数</div></div>
-</div></div>"""
 
     def execute(self, segments: list) -> tuple:
         if not segments:
@@ -211,23 +170,8 @@ class ImageCollect:
     RETURN_NAMES = ("accumulated", "total_frames")
     FUNCTION = "execute"
     CATEGORY = "video/split"
-    DESCRIPTION = """<div id=VHS_shortdesc>在循环中收集图像帧</div>
-<div vhs_title="输入" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输入: 
-<div vhs_title="new_images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">new_images: 当前迭代要添加的图像帧</div></div>
-<div vhs_title="images" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">images: （可选）之前累积的图像帧。第一次迭代留空</div></div>
-</div></div>
-<div vhs_title="输出" style="display: flex; font-size: 0.8em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">输出: 
-<div vhs_title="accumulated" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">accumulated: 累积的帧，连接 forLoopEnd</div></div>
-<div vhs_title="total_frames" style="display: flex; font-size: 1em" class="VHS_collapse"><div style="color: #AAA; height: 1.5em;">[<span style="font-family: monospace">-</span>]</div><div style="width: 100%">total_frames: 当前总帧数</div></div>
-</div></div>"""
 
     def execute(self, new_images: torch.Tensor, images=None) -> tuple:
-        """
-        智能收集图像帧：
-        - images 为 None: 返回 new_images
-        - images 为张量: 合并张量
-        - images 为列表: 合并列表中所有张量
-        """
         # 处理 new_images 可能是列表的情况
         if isinstance(new_images, list):
             new_images = new_images[0] if len(new_images) == 1 else torch.cat(new_images, dim=0)

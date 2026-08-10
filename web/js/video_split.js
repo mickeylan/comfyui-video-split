@@ -79,8 +79,8 @@ app.registerExtension({
                 if (!HELP_NODES.has(node.type)) continue;
                 // 始终绘制 ? 按钮
                 
-                var x = node.pos[0] + node.size[0] - 18;
-                var y = node.pos[1] + 10;
+                var x = node.pos[0] + node.size[0] - 15;
+                var y = node.pos[1] - 10;
                 
                 ctx.save();
                 ctx.font = "bold 12px Arial";
