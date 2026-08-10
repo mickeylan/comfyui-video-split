@@ -155,15 +155,31 @@ VHS Load Video ──┬──→ Video Segment Info ──→ forLoopStart(tota
                       最终视频
 ```
 
-### 关键连接
+### 重要说明：images 输入的连接
+
+**Video Segment Info 和 Get Video Segment 都需要连接同一个 images 数据源！**
+
+```
+                    ┌──→ Video Segment Info 的 images 输入
+VHS Load Video ─────┤
+     (image输出)     └──→ Get Video Segment 的 images 输入
+```
+
+**原因：**
+- `Video Segment Info` 需要帧张量来计算总帧数和分段信息
+- `Get Video Segment` 需要帧张量来切片提取当前分段
+- 两者必须使用同一个数据源，否则分段索引会不匹配
+
+### 关键连接步骤
 
 1. `VHS Load Video` 的 **image** 输出 → `Video Segment Info` 的 **images** 输入
-2. `Video Segment Info` 的 **total_segments** → `forLoopStart` 的 **total**
-3. `forLoopStart` 的 **index** → `Get Video Segment` 的 **segment_index**
-4. `VHS Load Video` 的 **image** 输出 → `Get Video Segment` 的 **images** 输入
-5. `Get Video Segment` 的 **segment_images** → 放大处理节点
-6. `Image Collect` 的 **accumulated** → `forLoopEnd` 的 **initial_value1**
-7. `forLoopEnd` 的 **value1** → `VHS_VideoCombine` 的 **images**
+2. `VHS Load Video` 的 **image** 输出 → `Get Video Segment` 的 **images** 输入（⚠️ 同一数据源）
+3. `Video Segment Info` 的 **total_segments** → `forLoopStart` 的 **total**
+4. `Video Segment Info` 的 **frames_per_segment** → `Get Video Segment` 的 **frames_per_segment**
+5. `forLoopStart` 的 **index** → `Get Video Segment` 的 **segment_index**
+6. `Get Video Segment` 的 **segment_images** → 放大处理节点
+7. `Image Collect` 的 **accumulated** → `forLoopEnd` 的 **initial_value1**
+8. `forLoopEnd` 的 **value1** → `VHS_VideoCombine` 的 **images**
 
 ---
 
