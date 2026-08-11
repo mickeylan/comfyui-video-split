@@ -370,4 +370,5 @@ VHS Load Video ─────┤
 
 ## 版本
 
+- v0.2.0 - 新增 GetVideoFrame、GetVideoFramesRange、VideoCrop、ImageToVideo、VideoScale、VideoInfo 节点；添加分块处理功能
 - v0.1.0 - 初始版本，支持视频分段、循环收集、国际化帮助文档

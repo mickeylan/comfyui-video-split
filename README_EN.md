@@ -254,4 +254,5 @@ Total segments: `(300 + 100 - 1) // 100 = 3`
 
 ## Version
 
+- v0.2.0 - Added GetVideoFrame, GetVideoFramesRange, VideoCrop, ImageToVideo, VideoScale, VideoInfo nodes; Added chunk processing
 - v0.1.0 - Initial release with video segmentation, loop collection, and i18n help documentation
