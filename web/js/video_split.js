@@ -13,10 +13,38 @@ const helpTexts = {
     "ImageCollect": {
         "en": "Collect images in a for loop\n\n**Inputs:**\n- new_images: Images to add from current iteration\n- images: (Optional) Previous accumulated images\n\n**Outputs:**\n- accumulated → forLoopEnd.initial_value1\n- total_frames: Current total frame count\n\n**Features:**\n- Smart type detection (tensor or list)",
         "zh": "在循环中收集图像帧\n\n**输入:**\n- new_images: 当前迭代要添加的图像帧\n- images: (可选) 之前累积的图像帧\n\n**输出:**\n- accumulated → forLoopEnd.initial_value1\n- total_frames: 当前总帧数\n\n**特性:**\n- 智能类型检测（张量或列表）"
+    },
+    "GetVideoFrame": {
+        "en": "Get a single frame from video\n\n**Inputs:**\n- images: Frame tensor\n- frame_index: Frame index (supports negative index, -1 = last frame)\n\n**Outputs:**\n- frame: Single frame image",
+        "zh": "获取视频的单帧图像\n\n**输入:**\n- images: 帧张量\n- frame_index: 帧索引（支持负索引，-1 = 最后一帧）\n\n**输出:**\n- frame: 单帧图像"
+    },
+    "GetVideoFramesRange": {
+        "en": "Get frames in a range from video\n\n**Inputs:**\n- images: Frame tensor\n- start_frame: Start frame index\n- end_frame: End frame index (-1 = to last frame)\n\n**Outputs:**\n- frames: Frame range tensor\n- frame_count: Number of frames",
+        "zh": "获取视频指定范围的帧\n\n**输入:**\n- images: 帧张量\n- start_frame: 起始帧索引\n- end_frame: 结束帧索引（-1 = 到最后一帧）\n\n**输出:**\n- frames: 帧范围张量\n- frame_count: 帧数"
+    },
+    "VideoCrop": {
+        "en": "Crop video with top/bottom/left/right\n\n**Inputs:**\n- images: Frame tensor\n- crop_top: Pixels to crop from top\n- crop_bottom: Pixels to crop from bottom\n- crop_left: Pixels to crop from left\n- crop_right: Pixels to crop from right\n\n**Outputs:**\n- cropped_images: Cropped frame tensor\n- new_height: New height\n- new_width: New width",
+        "zh": "视频裁剪（上下左右）\n\n**输入:**\n- images: 帧张量\n- crop_top: 顶部裁剪像素\n- crop_bottom: 底部裁剪像素\n- crop_left: 左侧裁剪像素\n- crop_right: 右侧裁剪像素\n\n**输出:**\n- cropped_images: 裁剪后的帧张量\n- new_height: 新高度\n- new_width: 新宽度"
+    },
+    "ImageToVideo": {
+        "en": "Convert single image to video by duplicating frames\n\n**Inputs:**\n- image: Single image\n- frame_count: Number of frames to output\n\n**Outputs:**\n- video: Video frame tensor",
+        "zh": "将单张图片转换为视频（复制帧）\n\n**输入:**\n- image: 单张图片\n- frame_count: 输出帧数\n\n**输出:**\n- video: 视频帧张量"
+    },
+    "VideoScale": {
+        "en": "Scale video to target resolution\n\n**Inputs:**\n- images: Frame tensor\n- width: Target width\n- height: Target height\n- method: Scale method (nearest-exact, bilinear, bicubic, area, bicubic-lanczos)\n\n**Outputs:**\n- scaled_images: Scaled frame tensor",
+        "zh": "视频缩放到目标分辨率\n\n**输入:**\n- images: 帧张量\n- width: 目标宽度\n- height: 目标高度\n- method: 缩放方法\n\n**输出:**\n- scaled_images: 缩放后的帧张量"
+    },
+    "VideoInfo": {
+        "en": "Get video information\n\n**Inputs:**\n- images: Frame tensor\n\n**Outputs:**\n- total_frames: Total frame count\n- height: Height\n- width: Width\n- channels: Channel count",
+        "zh": "获取视频信息\n\n**输入:**\n- images: 帧张量\n\n**输出:**\n- total_frames: 总帧数\n- height: 高度\n- width: 宽度\n- channels: 通道数"
     }
 };
 
-const HELP_NODES = new Set(["VideoSegmentInfo", "GetVideoSegment", "ImageCollect"]);
+const HELP_NODES = new Set([
+    "VideoSegmentInfo", "GetVideoSegment", "ImageCollect",
+    "GetVideoFrame", "GetVideoFramesRange", "VideoCrop",
+    "ImageToVideo", "VideoScale", "VideoInfo"
+]);
 const nodeDescriptions = new Map();
 
 // 创建样式表
