@@ -17,6 +17,12 @@ Place the `comfyui-video-split` folder into the `custom_nodes/` directory and re
 | **Video Split (Multiple)** | Split video into all segments at once |
 | **Merge Video Segments** | Merge multiple segments |
 | **Image Collect** | Collect images in a loop |
+| **Get Video Frame** | Get a single frame |
+| **Get Video Frames Range** | Get frames in a range |
+| **Video Crop** | Crop video |
+| **Image To Video** | Convert image to video |
+| **Video Scale** | Scale video |
+| **Video Info** | Get video info |
 
 ## Node Details
 

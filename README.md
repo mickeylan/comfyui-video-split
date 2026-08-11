@@ -17,6 +17,12 @@
 | **Video Split (Multiple)** | 一次性分割所有分段 |
 | **Merge Video Segments** | 合并多个视频分段 |
 | **Image Collect** | 在循环中收集图像帧 |
+| **Get Video Frame** | 获取单帧图像 |
+| **Get Video Frames Range** | 获取帧范围 |
+| **Video Crop** | 视频裁剪 |
+| **Image To Video** | 图片转视频 |
+| **Video Scale** | 视频缩放 |
+| **Video Info** | 获取视频信息 |
 
 ## 节点详情
 
@@ -199,6 +205,121 @@ VHS Load Video ─────┤
 **原因**：
 - `initial_value1` = 循环开始时的初始值（第一次迭代为空）
 - `value1` = 传递给循环内的当前值（包括累积结果）
+
+---
+
+## 新增节点
+
+### Get Video Frame
+
+获取视频的单帧图像。
+
+**输入：**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| images | IMAGE | 帧张量 |
+| frame_index | INT | 帧索引（支持负索引，-1 表示最后一帧） |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| frame | IMAGE | 单帧图像 |
+
+---
+
+### Get Video Frames Range
+
+获取视频指定范围的帧。
+
+**输入：**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| images | IMAGE | 帧张量 |
+| start_frame | INT | 起始帧索引 |
+| end_frame | INT | 结束帧索引（-1 表示到最后一帧） |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| frames | IMAGE | 帧范围 |
+| frame_count | INT | 帧数 |
+
+---
+
+### Video Crop
+
+视频裁剪，支持上下左右裁剪。
+
+**输入：**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| images | IMAGE | 帧张量 |
+| crop_top | INT | 顶部裁剪像素 |
+| crop_bottom | INT | 底部裁剪像素 |
+| crop_left | INT | 左侧裁剪像素 |
+| crop_right | INT | 右侧裁剪像素 |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| cropped_images | IMAGE | 裁剪后的帧张量 |
+| new_height | INT | 新高度 |
+| new_width | INT | 新宽度 |
+
+---
+
+### Image To Video
+
+将单张图片转换为视频（复制帧）。
+
+**输入：**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| image | IMAGE | 单张图片 |
+| frame_count | INT | 输出帧数 |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| video | IMAGE | 视频帧张量 |
+
+---
+
+### Video Scale
+
+视频缩放，使用分块处理避免内存峰值。
+
+**输入：**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| images | IMAGE | 帧张量 |
+| width | INT | 目标宽度 |
+| height | INT | 目标高度 |
+| method | 选择 | 缩放方法：nearest-exact, bilinear, bicubic, area, bicubic-lanczos |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| scaled_images | IMAGE | 缩放后的帧张量 |
+
+---
+
+### Video Info
+
+获取视频信息。
+
+**输入：**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| images | IMAGE | 帧张量 |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| total_frames | INT | 总帧数 |
+| height | INT | 高度 |
+| width | INT | 宽度 |
+| channels | INT | 通道数 |
 
 ---
 
