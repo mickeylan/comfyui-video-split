@@ -479,3 +479,10 @@ VHS Load Video ─────┤
 - v0.3.0 - 新增剪映功能节点：VideoReverse、VideoResample、VideoSampleFrames、VideoTimeRemap、VideoConcat、VideoFade、VideoOverlay、FrameInterpolate、FrameDeduplicate
 - v0.2.0 - 新增 GetVideoFrame、GetVideoFramesRange、VideoCrop、ImageToVideo、VideoScale、VideoInfo 节点；添加分块处理功能
 - v0.1.0 - 初始版本，支持视频分段、循环收集、国际化帮助文档
+
+---
+
+## 相关文档
+
+- [使用文档](docs/USER_GUIDE.md) - 详细的节点使用说明
+- [开发规划](ROADMAP.md) - 项目路线图和功能对比

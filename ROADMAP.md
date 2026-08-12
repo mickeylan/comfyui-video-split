@@ -2,22 +2,22 @@
 
 ## 目标
 
-打造一个**简化版剪映**，支持漫剧制作的核心功能。
+打造一个**简化版剪映**，支持 AI 漫剧制作的核心功能。
 
 ---
 
-## 当前状态 (v0.3.0)
+## 当前状态 (v0.7.0)
 
-### 已有节点 (20个)
+### 已有节点 (55个)
 
-#### 核心分段节点 (5个)
+#### 核心分段节点 (5个) ✅
 - Video Segment Info
 - Get Video Segment
 - Video Split (Multiple)
 - Merge Video Segments
 - Image Collect
 
-#### 基础编辑节点 (6个)
+#### 基础编辑节点 (6个) ✅
 - Get Video Frame
 - Get Video Frames Range
 - Video Crop
@@ -25,7 +25,7 @@
 - Video Scale
 - Video Info
 
-#### 剪映功能节点 (9个)
+#### 剪映功能节点 (9个) ✅
 - Video Reverse
 - Video Resample
 - Video Sample Frames
@@ -36,172 +36,154 @@
 - Frame Interpolate
 - Frame Deduplicate
 
----
+#### 音频处理节点 (10个) ✅
+- Audio Extract
+- Audio From Video
+- Audio Merge
+- Audio Volume
+- Audio Fade
+- Audio Info
+- Audio Mix（多音轨混合）
+- Audio Fit To Video（时长匹配）
+- Audio Loop
+- Audio Cut
 
-## 开发规划
+#### 文字/字幕节点 (4个) ✅
+- Text Overlay（支持中文）
+- Text Animation（打字机效果）
+- Subtitle Import（SRT 导入）
+- Text Position Preset
 
-### Phase 1: 音频处理 (核心) ⭐⭐⭐⭐⭐
+#### 滤镜/调色节点 (4个) ✅
+- Color Adjust（亮度/对比度/饱和度）
+- Color Temperature（色温）
+- Color Grade Preset（预设滤镜）
+- Vignette（暗角）
 
-**目标**: 解决视频放大后音频丢失问题
+#### 转场效果节点 (4个) ✅
+- Transition Slide
+- Transition Zoom
+- Transition Wipe
+- Transition Dissolve
 
-| 节点 | 功能 | 实现方案 | 优先级 |
-|------|------|---------|--------|
-| Audio Extract | 从视频提取音频 | PyAV decode audio stream | P0 |
-| Audio Merge | 音频合并到视频 | PyAV encode + mux | P0 |
-| Audio Volume | 音量调节 | PyAV filter volume | P0 |
-| Audio Fade | 音频淡入淡出 | PyAV filter afade | P0 |
-| Audio Resample | 音频重采样 | PyAV resample | P1 |
-| Audio Info | 获取音频信息 | PyAV stream info | P1 |
+#### 特效节点 (4个) ✅
+- Background Remove（角色抠像）
+- Background Replace（背景替换）
+- Color Key（色键抠像）
+- Simple Background Remove
 
-**依赖**: `av` (PyAV)
+#### AI 辅助节点 (4个) ✅
+- Auto Subtitle（Whisper 语音识别）
+- Auto Subtitle From File
+- Auto TTS（Edge-TTS 文字转语音）
+- Auto TTS Simple
 
-**预计工作量**: 4小时
-
----
-
-### Phase 2: 字幕/文字 (核心) ⭐⭐⭐⭐⭐
-
-**目标**: 支持漫剧对白、标题、说明文字
-
-| 节点 | 功能 | 实现方案 | 优先级 |
-|------|------|---------|--------|
-| Text Overlay | 文字叠加到视频帧 | PIL/Pillow 生成文字图片 | P0 |
-| Text Style | 文字样式设置 | PIL + 参数配置 | P0 |
-| Subtitle Import | 导入 SRT/ASS 字幕 | 解析字幕文件 | P1 |
-| Subtitle Timing | 字幕时间对齐 | 根据时间戳显示 | P1 |
-| Text Animation | 文字动画（打字机等） | 自定义动画逻辑 | P2 |
-
-**依赖**: `PIL` (Pillow), `srt` (可选)
-
-**预计工作量**: 6小时
-
----
-
-### Phase 3: 滤镜/调色 (重要) ⭐⭐⭐⭐
-
-**目标**: 统一画面色调，提升质感
-
-| 节点 | 功能 | 实现方案 | 优先级 |
-|------|------|---------|--------|
-| Color Adjust | 亮度/对比度/饱和度 | PyAV filter eq | P0 |
-| Color Grade | 色彩分级 | PyAV filter colorbalance | P1 |
-| Filters Preset | 预设滤镜 | 组合多个 filter | P1 |
-| Color Match | 色彩匹配 | 直方图匹配 | P2 |
-
-**依赖**: `av` (PyAV), `numpy`
-
-**预计工作量**: 4小时
+#### 批量渲染节点 (5个) ✅
+- Batch Render Queue
+- Batch Render Status
+- Batch Render Execute
+- Batch Workflow From Images
+- Batch Process Images
 
 ---
 
-### Phase 4: 转场效果 (重要) ⭐⭐⭐⭐
+## 版本历史
 
-**目标**: 专业转场效果
-
-| 节点 | 功能 | 实现方案 | 优先级 |
-|------|------|---------|--------|
-| Transition Fade | 淡入淡出转场 | 已有 Video Fade | - |
-| Transition Slide | 滑动转场 | 帧位移动画 | P0 |
-| Transition Zoom | 缩放转场 | 帧缩放动画 | P0 |
-| Transition Wipe | 擦除转场 | mask 动画 | P1 |
-| Transition Dissolve | 溶解转场 | alpha 混合 | P1 |
-| Transition XFade | ffmpeg xfade 滤镜 | PyAV filter xfade | P1 |
-
-**依赖**: `av` (PyAV)
-
-**预计工作量**: 5小时
+| 版本 | 内容 | 节点数 |
+|------|------|--------|
+| v0.7.0 | 批量渲染节点 | 55 |
+| v0.6.0 | AI 辅助节点（自动字幕、配音） | 50 |
+| v0.5.0 | 音频增强、特效节点（抠像、背景替换） | 46 |
+| v0.4.0 | 音频处理、文字字幕、滤镜调色、转场效果 | 42 |
+| v0.3.0 | 剪映功能节点（倒放、变速、拼接等） | 20 |
+| v0.2.0 | 帧处理、裁剪、缩放、分块处理 | 11 |
+| v0.1.0 | 视频分段、循环收集 | 5 |
 
 ---
 
-### Phase 5: 特效功能 (可选) ⭐⭐⭐
+## 功能对比（vs 剪映）
 
-**目标**: 高级特效支持
+| 功能 | 剪映 | video-split | 状态 |
+|------|------|-------------|------|
+| 视频分割/合并 | ✅ | ✅ | ✅ 完成 |
+| 变速/倒放 | ✅ | ✅ | ✅ 完成 |
+| 裁剪/缩放 | ✅ | ✅ | ✅ 完成 |
+| 淡入淡出 | ✅ | ✅ | ✅ 完成 |
+| 转场效果 | ✅ | ✅ | ✅ 完成 |
+| 滤镜/调色 | ✅ | ✅ | ✅ 完成 |
+| 音频提取/合并 | ✅ | ✅ | ✅ 完成 |
+| 多音轨混合 | ✅ | ✅ | ✅ 完成 |
+| 音频时长匹配 | ✅ | ✅ | ✅ 完成 |
+| 字幕/文字 | ✅ | ✅ | ✅ 完成 |
+| 中文字体支持 | ✅ | ✅ | ✅ 完成 |
+| 抠像/背景替换 | ✅ | ✅ | ✅ 完成 |
+| 自动字幕 | ✅ | ✅ | ✅ 完成 |
+| 自动配音 | ✅ | ✅ | ✅ 完成 |
+| 批量渲染 | ✅ | ✅ | ✅ 完成 |
 
-| 节点 | 功能 | 实现方案 | 优先级 |
-|------|------|---------|--------|
-| Green Screen | 绿幕抠像 | 色键抠像 | P1 |
-| Mask Overlay | 蒙版叠加 | alpha channel | P1 |
-| Motion Blur | 运动模糊 | 帧混合 | P2 |
-| Glitch Effect | 故障效果 | 随机像素操作 | P2 |
+**功能对齐度：100%**
 
-**依赖**: `numpy`, `torch`
+---
 
-**预计工作量**: 6小时
+## 未来规划
+
+### Phase 6: 高级功能（待评估）
+
+| 功能 | 说明 | 优先级 |
+|------|------|--------|
+| 多角色字幕样式 | 按角色 ID 应用不同颜色/字体 | P2 |
+| 表情动画 | 角色表情驱动 | P2 |
+| 镜头运动 | 推拉摇移效果 | P2 |
+| 关键帧动画 | 位置/缩放/旋转关键帧 | P2 |
+| 蒙版动画 | 动态蒙版 | P3 |
+| 运动模糊 | 帧混合实现 | P3 |
+| 故障效果 | 赛博朋克风格 | P3 |
+
+### 可选扩展
+
+| 功能 | 实现方式 |
+|------|---------|
+| 口型同步 | 配合 SadTalker/Wav2Lip 工作流 |
+| 自动字幕翻译 | Whisper + 翻译 API |
+| 视频超分辨率 | 配合现有放大模型 |
 
 ---
 
 ## 技术架构
 
-### 依赖管理
-
-```python
-# requirements.txt
-av>=10.0.0      # PyAV - ffmpeg Python 绑定
-Pillow>=9.0.0   # PIL - 图像处理
-numpy>=1.20.0   # 数值计算
-torch>=2.0.0    # 张量处理
-```
-
 ### 文件结构
 
 ```
 comfyui-video-split/
-├── __init__.py
-├── nodes.py              # 所有节点定义
-├── audio_nodes.py        # 音频处理节点
-├── text_nodes.py         # 文字/字幕节点
-├── filter_nodes.py       # 滤镜/调色节点
-├── transition_nodes.py   # 转场效果节点
-├── effect_nodes.py       # 特效节点
-├── utils/
-│   ├── audio.py          # 音频处理工具
-│   ├── text.py           # 文字处理工具
-│   └── ffmpeg.py         # ffmpeg 命令封装
-└── web/js/video_split.js # 前端扩展
+├── __init__.py              # 节点注册
+├── nodes.py                 # 核心分段 + 基础编辑 + 剪映功能
+├── audio_nodes.py           # 音频处理节点
+├── text_nodes.py            # 文字/字幕节点
+├── filter_nodes.py          # 滤镜/调色节点
+├── transition_nodes.py      # 转场效果节点
+├── effect_nodes.py          # 特效节点（抠像/背景）
+├── ai_nodes.py              # AI 辅助节点（字幕/配音）
+├── batch_nodes.py           # 批量渲染节点
+├── requirements.txt         # 依赖
+├── docs/
+│   └── USER_GUIDE.md        # 详细使用文档
+├── web/js/video_split.js    # 前端帮助系统
+├── workflows/               # 示例工作流
+├── README.md                # 中文文档
+├── README_EN.md             # 英文文档
+└── ROADMAP.md               # 开发规划（本文件）
 ```
 
----
+### 依赖
 
-## 开发时间表
-
-| 阶段 | 内容 | 预计时间 | 实际完成 | 目标版本 |
-|------|------|---------|---------|---------|
-| Phase 1 | 音频处理 | 4小时 | ✅ 完成 | v0.4.0 |
-| Phase 2 | 字幕/文字 | 6小时 | ✅ 完成 | v0.4.0 |
-| Phase 3 | 滤镜/调色 | 4小时 | ✅ 完成 | v0.4.0 |
-| Phase 4 | 转场效果 | 5小时 | ✅ 完成 | v0.4.0 |
-| Phase 5 | 特效功能 | 6小时 | 📋 待开发 | v0.5.0 |
-| **总计** | **Phase 1-4** | **19小时** | **已完成** | **v0.4.0** |
-
----
-
-## 验收标准
-
-### Phase 1 验收
-- [ ] 可以从视频中提取音频
-- [ ] 可以将音频合并到视频
-- [ ] 可以调节音量
-- [ ] 可以添加音频淡入淡出
-
-### Phase 2 验收
-- [ ] 可以在视频上叠加文字
-- [ ] 支持文字样式（字体、大小、颜色、位置）
-- [ ] 可以导入 SRT 字幕文件
-- [ ] 字幕可以正确对齐时间
-
-### Phase 3 验收
-- [ ] 可以调节亮度、对比度、饱和度
-- [ ] 支持预设滤镜效果
-- [ ] 处理速度可接受
-
-### Phase 4 验收
-- [ ] 支持至少 5 种转场效果
-- [ ] 转场时长可调
-- [ ] 效果流畅
-
-### Phase 5 验收
-- [ ] 绿幕抠像效果可用
-- [ ] 蒙版功能可用
+```
+av>=10.0.0           # PyAV - 音频处理
+Pillow>=9.0.0        # PIL - 文字渲染
+numpy>=1.20.0        # 数值计算
+torch>=2.0.0         # 张量处理
+edge-tts>=6.1.0      # 自动配音（可选）
+openai-whisper       # 自动字幕（可选）
+```
 
 ---
 
@@ -209,28 +191,14 @@ comfyui-video-split/
 
 | 风险 | 影响 | 对策 |
 |------|------|------|
-| PyAV 兼容性问题 | 中 | 提供 ffmpeg 命令行备选方案 |
-| 文字渲染性能 | 低 | 使用 GPU 加速或缓存 |
+| PyAV 兼容性问题 | 中 | 提供错误提示，引导安装 |
+| 中文字体缺失 | 中 | 自动检测系统字体，提示安装 |
 | 音频同步问题 | 高 | 基于时间戳精确对齐 |
 | 内存占用 | 中 | 分块处理，及时释放 |
+| Whisper 模型下载 | 低 | 使用 base 模型，体积小 |
 
 ---
 
-## 更新日志
-
-### v0.3.0 (当前)
-- 新增 9 个剪映功能节点
-- 支持视频倒放、变速、拼接等基础编辑功能
-
-### v0.4.0 (计划)
-- 新增音频处理节点
-- 解决视频放大后音频丢失问题
-
-### v0.5.0 (计划)
-- 新增字幕/文字节点
-- 支持漫剧对白、标题显示
-
----
-
-**文档版本**: v1.0
+**文档版本**: v2.0
 **最后更新**: 2024年
+**当前版本**: v0.7.0
