@@ -55,6 +55,10 @@
 | **Audio Volume** | 音量调节 |
 | **Audio Fade** | 音频淡入淡出 |
 | **Audio Info** | 获取音频信息 |
+| **Audio Mix** | 多音轨混合（BGM+配音+音效） |
+| **Audio Fit To Video** | 音频时长匹配视频 |
+| **Audio Loop** | 音频循环 |
+| **Audio Cut** | 音频切割 |
 
 ### 文字/字幕节点 📝
 
@@ -82,6 +86,15 @@
 | **Transition Zoom** | 缩放转场 |
 | **Transition Wipe** | 擦除转场 |
 | **Transition Dissolve** | 溶解转场 |
+
+### 特效节点 🌟
+
+| 节点名称 | 功能 | 漫剧用途 |
+|---------|------|---------|
+| **Background Remove** | 角色抠像 | AI 生成角色背景不干净 |
+| **Background Replace** | 背景替换 | 把角色放到新背景上 |
+| **Color Key** | 色键抠像 | 绿幕/蓝幕抠像 |
+| **Simple Background Remove** | 简单背景移除 | 纯色背景快速移除 |
 
 ## 节点详情
 
@@ -429,6 +442,7 @@ VHS Load Video ─────┤
 
 ## 版本
 
+- v0.5.0 - 新增音频增强（多轨混合、时长匹配）、特效节点（抠像、背景替换）
 - v0.4.0 - 新增音频处理、文字字幕、滤镜调色、转场效果节点，打造完整剪映功能
 - v0.3.0 - 新增剪映功能节点：VideoReverse、VideoResample、VideoSampleFrames、VideoTimeRemap、VideoConcat、VideoFade、VideoOverlay、FrameInterpolate、FrameDeduplicate
 - v0.2.0 - 新增 GetVideoFrame、GetVideoFramesRange、VideoCrop、ImageToVideo、VideoScale、VideoInfo 节点；添加分块处理功能
