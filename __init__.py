@@ -40,4 +40,12 @@ try:
 except ImportError as e:
     print(f"[Video Split] Warning: Effect nodes not loaded: {e}")
 
+# 导入 AI 辅助节点
+try:
+    from .ai_nodes import AI_NODE_CLASS_MAPPINGS, AI_NODE_DISPLAY_NAME_MAPPINGS
+    NODE_CLASS_MAPPINGS.update(AI_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(AI_NODE_DISPLAY_NAME_MAPPINGS)
+except ImportError as e:
+    print(f"[Video Split] Warning: AI nodes not loaded: {e}")
+
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', 'WEB_DIRECTORY']
