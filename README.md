@@ -10,6 +10,8 @@
 
 ## 节点列表
 
+### 核心分段节点
+
 | 节点名称 | 功能 |
 |---------|------|
 | **Video Segment Info** | 计算视频分段信息 |
@@ -17,12 +19,31 @@
 | **Video Split (Multiple)** | 一次性分割所有分段 |
 | **Merge Video Segments** | 合并多个视频分段 |
 | **Image Collect** | 在循环中收集图像帧 |
+
+### 基础编辑节点
+
+| 节点名称 | 功能 |
+|---------|------|
 | **Get Video Frame** | 获取单帧图像 |
 | **Get Video Frames Range** | 获取帧范围 |
 | **Video Crop** | 视频裁剪 |
 | **Image To Video** | 图片转视频 |
 | **Video Scale** | 视频缩放 |
 | **Video Info** | 获取视频信息 |
+
+### 剪映功能节点 🎬
+
+| 节点名称 | 功能 | 漫剧用途 |
+|---------|------|---------|
+| **Video Reverse** | 视频倒放 | 回忆镜头、特效 |
+| **Video Resample** | 帧率转换 | 调整流畅度 |
+| **Video Sample Frames** | 抽帧提取 | 延时摄影效果 |
+| **Video Time Remap** | 时间重映射 | 变速播放 |
+| **Video Concat** | 视频拼接 | 画中画、对比 |
+| **Video Fade** | 淡入淡出 | 转场效果 |
+| **Video Overlay** | 视频叠加 | 水印、特效 |
+| **Frame Interpolate** | 帧插值 | 慢动作 |
+| **Frame Deduplicate** | 帧去重 | 减小体积 |
 
 ## 节点详情
 
@@ -370,5 +391,6 @@ VHS Load Video ─────┤
 
 ## 版本
 
+- v0.3.0 - 新增剪映功能节点：VideoReverse、VideoResample、VideoSampleFrames、VideoTimeRemap、VideoConcat、VideoFade、VideoOverlay、FrameInterpolate、FrameDeduplicate
 - v0.2.0 - 新增 GetVideoFrame、GetVideoFramesRange、VideoCrop、ImageToVideo、VideoScale、VideoInfo 节点；添加分块处理功能
 - v0.1.0 - 初始版本，支持视频分段、循环收集、国际化帮助文档
