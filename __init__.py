@@ -48,4 +48,12 @@ try:
 except ImportError as e:
     print(f"[Video Split] Warning: AI nodes not loaded: {e}")
 
+# 导入批量渲染节点
+try:
+    from .batch_nodes import BATCH_NODE_CLASS_MAPPINGS, BATCH_NODE_DISPLAY_NAME_MAPPINGS
+    NODE_CLASS_MAPPINGS.update(BATCH_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(BATCH_NODE_DISPLAY_NAME_MAPPINGS)
+except ImportError as e:
+    print(f"[Video Split] Warning: Batch nodes not loaded: {e}")
+
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', 'WEB_DIRECTORY']

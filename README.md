@@ -111,6 +111,21 @@ pip install edge-tts        # 自动配音
 pip install openai-whisper  # 自动字幕
 ```
 
+### 批量渲染节点 📦
+
+| 节点名称 | 功能 | 漫剧用途 |
+|---------|------|---------|
+| **Batch Render Queue** | 批量渲染队列 | 添加多个工作流到队列 |
+| **Batch Render Status** | 批量渲染状态 | 查看当前渲染进度 |
+| **Batch Render Execute** | 批量渲染执行 | 执行渲染队列 |
+| **Batch Workflow From Images** | 从图像创建批次 | 批量处理图像 |
+| **Batch Process Images** | 批量处理图像 | 处理图像批次 |
+
+**使用方法**：
+1. 使用 `Batch Render Queue` 添加工作流路径（每行一个 JSON 文件路径）
+2. 使用 `Batch Render Status` 查看队列状态
+3. 配合 ComfyUI API 或前端执行批量渲染
+
 ## 节点详情
 
 ### Video Segment Info
@@ -457,6 +472,7 @@ VHS Load Video ─────┤
 
 ## 版本
 
+- v0.7.0 - 新增批量渲染节点：队列管理、状态查询、批量处理
 - v0.6.0 - 新增 AI 辅助节点：自动字幕、自动配音（Edge-TTS）
 - v0.5.0 - 新增音频增强（多轨混合、时长匹配）、特效节点（抠像、背景替换）
 - v0.4.0 - 新增音频处理、文字字幕、滤镜调色、转场效果节点，打造完整剪映功能
