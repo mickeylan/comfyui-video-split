@@ -32,4 +32,12 @@ try:
 except ImportError as e:
     print(f"[Video Split] Warning: Transition nodes not loaded: {e}")
 
+# 导入特效节点
+try:
+    from .effect_nodes import EFFECT_NODE_CLASS_MAPPINGS, EFFECT_NODE_DISPLAY_NAME_MAPPINGS
+    NODE_CLASS_MAPPINGS.update(EFFECT_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(EFFECT_NODE_DISPLAY_NAME_MAPPINGS)
+except ImportError as e:
+    print(f"[Video Split] Warning: Effect nodes not loaded: {e}")
+
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', 'WEB_DIRECTORY']
