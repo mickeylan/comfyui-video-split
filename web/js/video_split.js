@@ -37,13 +37,56 @@ const helpTexts = {
     "VideoInfo": {
         "en": "Get video information\n\n**Inputs:**\n- images: Frame tensor\n\n**Outputs:**\n- total_frames: Total frame count\n- height: Height\n- width: Width\n- channels: Channel count",
         "zh": "获取视频信息\n\n**输入:**\n- images: 帧张量\n\n**输出:**\n- total_frames: 总帧数\n- height: 高度\n- width: 宽度\n- channels: 通道数"
+    },
+    // 剪映功能节点
+    "VideoReverse": {
+        "en": "Reverse video frames\n\n**Inputs:**\n- images: Frame tensor\n\n**Outputs:**\n- reversed_images: Reversed frame tensor",
+        "zh": "视频倒放\n\n**输入:**\n- images: 帧张量\n\n**输出:**\n- reversed_images: 倒放后的帧张量"
+    },
+    "VideoResample": {
+        "en": "Convert frame rate\n\n**Inputs:**\n- images: Frame tensor\n- source_fps: Source frame rate\n- target_fps: Target frame rate\n- mode: drop/duplicate/blend\n\n**Outputs:**\n- resampled_images: Resampled frames\n- new_frame_count: New frame count",
+        "zh": "帧率转换\n\n**输入:**\n- images: 帧张量\n- source_fps: 原始帧率\n- target_fps: 目标帧率\n- mode: drop抽帧/duplicate复制/blend混合\n\n**输出:**\n- resampled_images: 转换后的帧\n- new_frame_count: 新帧数"
+    },
+    "VideoSampleFrames": {
+        "en": "Sample frames at intervals\n\n**Inputs:**\n- images: Frame tensor\n- sample_interval: Sample every N frames\n- offset: Start offset\n\n**Outputs:**\n- sampled_images: Sampled frames\n- frame_count: Frame count",
+        "zh": "抽帧提取\n\n**输入:**\n- images: 帧张量\n- sample_interval: 每隔N帧取1帧\n- offset: 起始偏移\n\n**输出:**\n- sampled_images: 采样后的帧\n- frame_count: 帧数"
+    },
+    "VideoTimeRemap": {
+        "en": "Remap video time (speed up/slow down)\n\n**Inputs:**\n- images: Frame tensor\n- speed: Playback speed (0.5=slow 2x, 2.0=fast 2x)\n- mode: drop/duplicate/blend\n\n**Outputs:**\n- remapped_images: Remapped frames\n- new_frame_count: New frame count",
+        "zh": "时间重映射（变速）\n\n**输入:**\n- images: 帧张量\n- speed: 播放速度（0.5=慢放2倍, 2.0=快放2倍）\n- mode: drop/duplicate/blend\n\n**输出:**\n- remapped_images: 重映射后的帧\n- new_frame_count: 新帧数"
+    },
+    "VideoConcat": {
+        "en": "Concatenate videos\n\n**Inputs:**\n- images1-4: Video 1-4\n- mode: sequence/horizontal/vertical\n\n**Outputs:**\n- concatenated_images: Concatenated frames\n- total_frames: Total frames",
+        "zh": "视频拼接\n\n**输入:**\n- images1-4: 视频1-4\n- mode: sequence顺序/horizontal左右/vertical上下\n\n**输出:**\n- concatenated_images: 拼接后的帧\n- total_frames: 总帧数"
+    },
+    "VideoFade": {
+        "en": "Add fade in/out effect\n\n**Inputs:**\n- images: Frame tensor\n- fade_in_frames: Fade in frames\n- fade_out_frames: Fade out frames\n- fade_color: black/white\n\n**Outputs:**\n- faded_images: Faded frames",
+        "zh": "淡入淡出\n\n**输入:**\n- images: 帧张量\n- fade_in_frames: 淡入帧数\n- fade_out_frames: 淡出帧数\n- fade_color: 黑色/白色\n\n**输出:**\n- faded_images: 淡入淡出后的帧"
+    },
+    "VideoOverlay": {
+        "en": "Overlay video on another\n\n**Inputs:**\n- background: Background video\n- overlay: Overlay video\n- opacity: Overlay opacity\n- x, y: Position\n\n**Outputs:**\n- output_images: Composited frames",
+        "zh": "视频叠加\n\n**输入:**\n- background: 背景视频\n- overlay: 叠加视频\n- opacity: 透明度\n- x, y: 位置\n\n**输出:**\n- output_images: 合成后的帧"
+    },
+    "FrameInterpolate": {
+        "en": "Interpolate frames for slow motion\n\n**Inputs:**\n- images: Frame tensor\n- interpolate_factor: Interpolation multiplier\n\n**Outputs:**\n- interpolated_images: Interpolated frames\n- new_frame_count: New frame count",
+        "zh": "帧插值（慢动作）\n\n**输入:**\n- images: 帧张量\n- interpolate_factor: 插值倍数\n\n**输出:**\n- interpolated_images: 插值后的帧\n- new_frame_count: 新帧数"
+    },
+    "FrameDeduplicate": {
+        "en": "Remove duplicate/similar frames\n\n**Inputs:**\n- images: Frame tensor\n- threshold: Similarity threshold\n\n**Outputs:**\n- deduplicated_images: Deduplicated frames\n- frame_count: Frame count",
+        "zh": "帧去重\n\n**输入:**\n- images: 帧张量\n- threshold: 相似度阈值\n\n**输出:**\n- deduplicated_images: 去重后的帧\n- frame_count: 帧数"
     }
 };
 
 const HELP_NODES = new Set([
+    // 核心节点
     "VideoSegmentInfo", "GetVideoSegment", "ImageCollect",
+    // 基础编辑节点
     "GetVideoFrame", "GetVideoFramesRange", "VideoCrop",
-    "ImageToVideo", "VideoScale", "VideoInfo"
+    "ImageToVideo", "VideoScale", "VideoInfo",
+    // 剪映功能节点
+    "VideoReverse", "VideoResample", "VideoSampleFrames",
+    "VideoTimeRemap", "VideoConcat", "VideoFade",
+    "VideoOverlay", "FrameInterpolate", "FrameDeduplicate"
 ]);
 const nodeDescriptions = new Map();
 
