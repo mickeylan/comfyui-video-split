@@ -6,11 +6,74 @@ import numpy as np
 import math
 from PIL import Image, ImageDraw, ImageFont
 import os
+import platform
 
 
 # ============================================================
-# Text Overlay - 文字叠加
+# 中文字体加载辅助函数
 # ============================================================
+
+def get_chinese_font(font_size=32, font_path=None):
+    """
+    获取支持中文的字体。
+    
+    Args:
+        font_size: 字体大小
+        font_path: 用户指定的字体路径
+    
+    Returns:
+        PIL ImageFont 对象
+    """
+    # 如果用户指定了字体路径，尝试加载
+    if font_path and os.path.exists(font_path):
+        try:
+            return ImageFont.truetype(font_path, font_size)
+        except Exception as e:
+            print(f"[Video Split] Failed to load font {font_path}: {e}")
+    
+    # 尝试系统自带的中文字体
+    system = platform.system()
+    
+    chinese_fonts = []
+    
+    if system == "Windows":
+        # Windows 系统中文字体
+        chinese_fonts = [
+            "C:/Windows/Fonts/msyh.ttc",      # 微软雅黑
+            "C:/Windows/Fonts/msyhbd.ttc",    # 微软雅黑粗体
+            "C:/Windows/Fonts/simhei.ttf",    # 黑体
+            "C:/Windows/Fonts/simsun.ttc",    # 宋体
+            "C:/Windows/Fonts/simkai.ttf",    # 楷体
+            "C:/Windows/Fonts/STZHONGS.TTF",  # 华文中宋
+            "C:/Windows/Fonts/STFANGSO.TTF",  # 华文仿宋
+        ]
+    elif system == "Darwin":  # macOS
+        chinese_fonts = [
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        ]
+    elif system == "Linux":
+        chinese_fonts = [
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/arphic/uming.ttc",
+        ]
+    
+    # 尝试加载系统中文字体
+    for font_file in chinese_fonts:
+        if os.path.exists(font_file):
+            try:
+                return ImageFont.truetype(font_file, font_size)
+            except Exception as e:
+                continue
+    
+    # 如果都失败了，返回默认字体并警告
+    print("[Video Split] Warning: No Chinese font found. Chinese text may not display correctly.")
+    print("[Video Split] Please specify a Chinese font path, e.g.: C:/Windows/Fonts/msyh.ttc")
+    return ImageFont.load_default()
+
 
 class TextOverlay:
     """
@@ -49,15 +112,8 @@ class TextOverlay:
         def process_chunk(chunk):
             result_frames = []
             
-            # 加载字体
-            try:
-                if font_path and os.path.exists(font_path):
-                    font = ImageFont.truetype(font_path, font_size)
-                else:
-                    # 尝试加载系统字体
-                    font = ImageFont.load_default()
-            except:
-                font = ImageFont.load_default()
+            # 使用支持中文的字体
+            font = get_chinese_font(font_size, font_path)
             
             for i in range(chunk.shape[0]):
                 # 转换为 PIL Image
@@ -69,12 +125,8 @@ class TextOverlay:
                 draw = ImageDraw.Draw(pil_image)
                 
                 # 解析颜色
-                try:
-                    fill_color = font_color
-                    stroke_fill = stroke_color
-                except:
-                    fill_color = "#FFFFFF"
-                    stroke_fill = "#000000"
+                fill_color = font_color if font_color else "#FFFFFF"
+                stroke_fill = stroke_color if stroke_color else "#000000"
                 
                 # 绘制文字
                 draw.text(
@@ -137,7 +189,8 @@ class TextAnimation:
         # 分块处理
         def process_chunk(chunk):
             result_frames = []
-            font = ImageFont.load_default()
+            # 使用支持中文的字体
+            font = get_chinese_font(font_size)
             
             for i in range(chunk.shape[0]):
                 frame = chunk[i].cpu().numpy()
@@ -255,7 +308,8 @@ class SubtitleImport:
         height = images.shape[1]
         width = images.shape[2]
         
-        font = ImageFont.load_default()
+        # 使用支持中文的字体
+        font = get_chinese_font(font_size)
         
         def process_chunk(chunk):
             result_frames = []
@@ -347,7 +401,7 @@ class TextPositionPreset:
         
         x, y, anchor = positions.get(position, (width // 2, height - margin, "mm"))
         
-        # 使用 TextOverlay
+        # 使用 TextOverlay，并指定中文字体
         overlay = TextOverlay()
         return overlay.execute(images, text, x, y, font_size, font_color, "", 0, "#000000")
 
