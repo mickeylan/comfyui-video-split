@@ -45,6 +45,44 @@
 | **Frame Interpolate** | 帧插值 | 慢动作 |
 | **Frame Deduplicate** | 帧去重 | 减小体积 |
 
+### 音频处理节点 🎵
+
+| 节点名称 | 功能 |
+|---------|------|
+| **Audio Extract** | 从视频文件提取音频 |
+| **Audio From Video** | 从视频张量提取音频 |
+| **Audio Merge** | 音频合并到视频 |
+| **Audio Volume** | 音量调节 |
+| **Audio Fade** | 音频淡入淡出 |
+| **Audio Info** | 获取音频信息 |
+
+### 文字/字幕节点 📝
+
+| 节点名称 | 功能 |
+|---------|------|
+| **Text Overlay** | 文字叠加到视频帧 |
+| **Text Animation** | 文字动画（打字机效果等） |
+| **Subtitle Import** | 导入 SRT 字幕 |
+| **Text Position Preset** | 文字位置预设 |
+
+### 滤镜/调色节点 🎨
+
+| 节点名称 | 功能 |
+|---------|------|
+| **Color Adjust** | 亮度/对比度/饱和度调节 |
+| **Color Temperature** | 色温调节 |
+| **Color Grade Preset** | 预设滤镜效果 |
+| **Vignette** | 暗角效果 |
+
+### 转场效果节点 ✨
+
+| 节点名称 | 功能 |
+|---------|------|
+| **Transition Slide** | 滑动转场 |
+| **Transition Zoom** | 缩放转场 |
+| **Transition Wipe** | 擦除转场 |
+| **Transition Dissolve** | 溶解转场 |
+
 ## 节点详情
 
 ### Video Segment Info
@@ -391,6 +429,7 @@ VHS Load Video ─────┤
 
 ## 版本
 
+- v0.4.0 - 新增音频处理、文字字幕、滤镜调色、转场效果节点，打造完整剪映功能
 - v0.3.0 - 新增剪映功能节点：VideoReverse、VideoResample、VideoSampleFrames、VideoTimeRemap、VideoConcat、VideoFade、VideoOverlay、FrameInterpolate、FrameDeduplicate
 - v0.2.0 - 新增 GetVideoFrame、GetVideoFramesRange、VideoCrop、ImageToVideo、VideoScale、VideoInfo 节点；添加分块处理功能
 - v0.1.0 - 初始版本，支持视频分段、循环收集、国际化帮助文档
