@@ -12,26 +12,26 @@ import torch
 def _process_in_chunks(tensor, process_func, chunk_size=64):
     """
     分块处理张量，避免内存峰值。
-    
+
     Args:
         tensor: 输入张量 [B, H, W, C]
         process_func: 处理函数，接收 (chunk_tensor,) 返回处理后的张量
         chunk_size: 每块处理的帧数
-    
+
     Returns:
         处理后的张量
     """
     total_frames = tensor.shape[0]
     if total_frames <= chunk_size:
         return process_func(tensor)
-    
+
     chunks = []
     for start in range(0, total_frames, chunk_size):
         end = min(start + chunk_size, total_frames)
         chunk = tensor[start:end]
         processed = process_func(chunk)
         chunks.append(processed)
-    
+
     return torch.cat(chunks, dim=0)
 
 
@@ -60,7 +60,7 @@ class VideoSegmentInfo:
     FUNCTION = "execute"
     CATEGORY = "video/split"
 
-    def execute(self, images: torch.Tensor, fps: float, split_mode: str, 
+    def execute(self, images: torch.Tensor, fps: float, split_mode: str,
                 segment_duration: float, segment_frames: int) -> tuple:
         total_frames = images.shape[0]
 
@@ -206,22 +206,22 @@ class ImageCollect:
         # 处理 new_images 可能是列表的情况
         if isinstance(new_images, list):
             new_images = new_images[0] if len(new_images) == 1 else torch.cat(new_images, dim=0)
-        
+
         # 第一次迭代，没有累积的图像
         if images is None:
             return (new_images, new_images.shape[0])
-        
+
         # images 是张量，直接合并
         if isinstance(images, torch.Tensor):
             accumulated = torch.cat([images, new_images], dim=0)
             return (accumulated, accumulated.shape[0])
-        
+
         # images 是列表，合并所有张量
         if isinstance(images, list):
             all_tensors = images + [new_images]
             accumulated = torch.cat(all_tensors, dim=0)
             return (accumulated, accumulated.shape[0])
-        
+
         # 未知类型，尝试直接合并
         accumulated = torch.cat([images, new_images], dim=0)
         return (accumulated, accumulated.shape[0])
@@ -255,14 +255,14 @@ class GetVideoFrame:
 
     def execute(self, images: torch.Tensor, frame_index: int) -> tuple:
         total_frames = images.shape[0]
-        
+
         # 支持负索引
         if frame_index < 0:
             frame_index += total_frames
-        
+
         if frame_index < 0 or frame_index >= total_frames:
             raise ValueError(f"Frame index {frame_index} out of range. Video has {total_frames} frames.")
-        
+
         return (images[frame_index:frame_index+1].clone(),)
 
 
@@ -289,22 +289,22 @@ class GetVideoFramesRange:
 
     def execute(self, images: torch.Tensor, start_frame: int, end_frame: int) -> tuple:
         total_frames = images.shape[0]
-        
+
         if start_frame < 0:
             start_frame += total_frames
-        
+
         if end_frame < 0:
             end_frame = total_frames
-        
+
         if start_frame < 0 or start_frame >= total_frames:
             raise ValueError(f"Start frame {start_frame} out of range. Video has {total_frames} frames.")
-        
+
         if end_frame > total_frames:
             end_frame = total_frames
-        
+
         if start_frame >= end_frame:
             raise ValueError(f"Start frame {start_frame} must be less than end frame {end_frame}.")
-        
+
         result = images[start_frame:end_frame].clone()
         return (result, result.shape[0])
 
@@ -337,17 +337,17 @@ class VideoCrop:
     def execute(self, images: torch.Tensor, crop_top: int, crop_bottom: int,
                 crop_left: int, crop_right: int) -> tuple:
         _, height, width, _ = images.shape
-        
+
         new_height = height - crop_top - crop_bottom
         new_width = width - crop_left - crop_right
-        
+
         if new_height <= 0 or new_width <= 0:
             raise ValueError(f"Invalid crop: result size {new_width}x{new_height} is invalid.")
-        
+
         # 分块处理
         def crop_chunk(chunk):
             return chunk[:, crop_top:height - crop_bottom, crop_left:width - crop_right, :]
-        
+
         result = _process_in_chunks(images, crop_chunk)
         return (result, new_height, new_width)
 
@@ -375,7 +375,7 @@ class ImageToVideo:
         # 如果输入是多帧，只取第一帧
         if image.shape[0] > 1:
             image = image[0:1]
-        
+
         # 复制帧
         video = image.repeat(frame_count, 1, 1, 1)
         return (video,)
@@ -394,7 +394,7 @@ class VideoScale:
                     "tooltip": "目标宽度"}),
                 "height": ("INT", {"default": 1080, "min": 1, "max": 8192, "step": 1,
                     "tooltip": "目标高度"}),
-                "method": (["nearest-exact", "bilinear", "bicubic", "area", "bicubic-lanczos"], 
+                "method": (["nearest-exact", "bilinear", "bicubic", "area", "bicubic-lanczos"],
                     {"default": "bilinear", "tooltip": "缩放方法"}),
             },
         }
@@ -406,10 +406,10 @@ class VideoScale:
 
     def execute(self, images: torch.Tensor, width: int, height: int, method: str) -> tuple:
         from comfy.utils import common_upscale
-        
+
         def scale_chunk(chunk):
             return common_upscale(chunk.movedim(-1, 1), width, height, method, "center").movedim(1, -1)
-        
+
         result = _process_in_chunks(images, scale_chunk)
         return (result,)
 
@@ -521,46 +521,40 @@ class VideoResample:
 
     def execute(self, images: torch.Tensor, source_fps: float, target_fps: float, mode: str) -> tuple:
         total_frames = images.shape[0]
-        
+
         # 计算目标帧数
         duration = total_frames / source_fps
         target_frames = int(duration * target_fps)
-        
+
         if target_frames <= 0:
             target_frames = 1
-        
-        # 计算帧映射
-        indices = torch.linspace(0, total_frames - 1, target_frames)
-        
+
+        # 帧位置使用浮点数，索引和权重留在输入设备上。
+        indices = torch.linspace(0, total_frames - 1, target_frames, device=images.device)
+
         if mode == "drop":
             # 直接取最近帧
             indices_int = indices.long()
             result = images[indices_int].clone()
-        
+
         elif mode == "duplicate":
             # 复制最近帧
             indices_int = indices.long()
             result = images[indices_int].clone()
-        
+
         elif mode == "blend":
-            # 混合相邻帧
-            result_frames = []
-            for idx in indices:
-                low_idx = int(idx)
-                high_idx = min(low_idx + 1, total_frames - 1)
-                weight = idx - low_idx
-                
-                if weight < 0.01:
-                    result_frames.append(images[low_idx])
-                else:
-                    blended = images[low_idx] * (1 - weight) + images[high_idx] * weight
-                    result_frames.append(blended)
-            
-            result = torch.stack(result_frames)
-        
+            # 混合相邻帧（向量化实现）
+            low_indices = indices.long()
+            high_indices = (low_indices + 1).clamp(max=total_frames - 1)
+            weights = (indices - low_indices).to(images.dtype).view(-1, 1, 1, 1)
+
+            low_frames = images[low_indices]
+            high_frames = images[high_indices]
+            result = low_frames * (1 - weights) + high_frames * weights
+
         else:
             result = images[indices.long()].clone()
-        
+
         return (result, result.shape[0])
 
 
@@ -587,13 +581,13 @@ class VideoSampleFrames:
 
     def execute(self, images: torch.Tensor, sample_interval: int, offset: int) -> tuple:
         total_frames = images.shape[0]
-        
+
         # 计算采样索引
         indices = list(range(offset, total_frames, sample_interval))
-        
+
         if not indices:
             return (images[0:1].clone(), 1)
-        
+
         result = images[indices].clone()
         return (result, result.shape[0])
 
@@ -621,33 +615,27 @@ class VideoTimeRemap:
 
     def execute(self, images: torch.Tensor, speed: float, mode: str) -> tuple:
         total_frames = images.shape[0]
-        
+
         # 计算新帧数
         new_frame_count = int(total_frames / speed)
-        
+
         if new_frame_count <= 0:
             new_frame_count = 1
-        
-        # 计算帧映射
-        indices = torch.linspace(0, total_frames - 1, new_frame_count)
-        
+
+        # 帧位置使用浮点数，索引和权重留在输入设备上。
+        indices = torch.linspace(0, total_frames - 1, new_frame_count, device=images.device)
+
         if mode == "drop" or mode == "duplicate":
             result = images[indices.long()].clone()
-        else:  # blend
-            result_frames = []
-            for idx in indices:
-                low_idx = int(idx)
-                high_idx = min(low_idx + 1, total_frames - 1)
-                weight = idx - low_idx
-                
-                if weight < 0.01:
-                    result_frames.append(images[low_idx])
-                else:
-                    blended = images[low_idx] * (1 - weight) + images[high_idx] * weight
-                    result_frames.append(blended)
-            
-            result = torch.stack(result_frames)
-        
+        else:  # blend - 向量化实现
+            low_indices = indices.long()
+            high_indices = (low_indices + 1).clamp(max=total_frames - 1)
+            weights = (indices - low_indices).to(images.dtype).view(-1, 1, 1, 1)
+
+            low_frames = images[low_indices]
+            high_frames = images[high_indices]
+            result = low_frames * (1 - weights) + high_frames * weights
+
         return (result, result.shape[0])
 
 
@@ -674,24 +662,26 @@ class VideoConcat:
     RETURN_NAMES = ("concatenated_images", "total_frames")
     FUNCTION = "execute"
     CATEGORY = "video/editor"
-    INPUT_IS_LIST = (False, False, True, True, True)
-    OUTPUT_IS_LIST = (False, False)
 
-    def execute(self, images1: torch.Tensor, mode: str, 
+    def execute(self, images1: torch.Tensor, mode: str,
                 images2=None, images3=None, images4=None) -> tuple:
-        # 收集所有视频
         videos = [images1]
-        if images2 is not None:
-            videos.append(images2)
-        if images3 is not None:
-            videos.append(images3)
-        if images4 is not None:
-            videos.append(images4)
-        
+        videos.extend(video for video in (images2, images3, images4) if video is not None)
+
+        # 检查尺寸一致性（用于 horizontal/vertical 模式）
+        if mode in ["horizontal", "vertical"]:
+            ref_h, ref_w = videos[0].shape[1], videos[0].shape[2]
+            for v in videos:
+                if v.shape[1] != ref_h or v.shape[2] != ref_w:
+                    raise ValueError(
+                        f"All videos must have the same spatial dimensions for {mode} mode. "
+                        f"Expected {ref_h}x{ref_w}, got {v.shape[1]}x{v.shape[2]}"
+                    )
+
         if mode == "sequence":
             # 顺序拼接（前后连接）
             result = torch.cat(videos, dim=0)
-        
+
         elif mode == "horizontal":
             # 水平拼接（左右并排）
             # 找到最小帧数
@@ -700,16 +690,16 @@ class VideoConcat:
             videos = [v[:min_frames] for v in videos]
             # 拼接
             result = torch.cat(videos, dim=2)  # 在宽度维度拼接
-        
+
         elif mode == "vertical":
             # 垂直拼接（上下并排）
             min_frames = min(v.shape[0] for v in videos)
             videos = [v[:min_frames] for v in videos]
             result = torch.cat(videos, dim=1)  # 在高度维度拼接
-        
+
         else:
             result = torch.cat(videos, dim=0)
-        
+
         return (result, result.shape[0])
 
 
@@ -736,11 +726,11 @@ class VideoFade:
     FUNCTION = "execute"
     CATEGORY = "video/editor"
 
-    def execute(self, images: torch.Tensor, fade_in_frames: int, fade_out_frames: int, 
+    def execute(self, images: torch.Tensor, fade_in_frames: int, fade_out_frames: int,
                 fade_color: str) -> tuple:
         total_frames = images.shape[0]
         result = images.clone()
-        
+
         # 淡入
         if fade_in_frames > 0:
             for i in range(min(fade_in_frames, total_frames)):
@@ -748,7 +738,7 @@ class VideoFade:
                 result[i] = images[i] * alpha
                 if fade_color == "white":
                     result[i] = result[i] + (1 - alpha)
-        
+
         # 淡出
         if fade_out_frames > 0:
             fade_start = max(0, total_frames - fade_out_frames)
@@ -757,7 +747,7 @@ class VideoFade:
                 result[i] = images[i] * alpha
                 if fade_color == "white":
                     result[i] = result[i] + (1 - alpha)
-        
+
         return (result,)
 
 
@@ -785,37 +775,37 @@ class VideoOverlay:
     FUNCTION = "execute"
     CATEGORY = "video/editor"
 
-    def execute(self, background: torch.Tensor, overlay: torch.Tensor, 
+    def execute(self, background: torch.Tensor, overlay: torch.Tensor,
                 opacity: float, x: int, y: int) -> tuple:
         # 取最小帧数
         min_frames = min(background.shape[0], overlay.shape[0])
-        
+
         bg = background[:min_frames].clone()
         ol = overlay[:min_frames]
-        
+
         _, bg_h, bg_w, _ = bg.shape
         _, ol_h, ol_w, _ = ol.shape
-        
+
         # 计算叠加区域
         x1 = max(0, x)
         y1 = max(0, y)
         x2 = min(bg_w, x + ol_w)
         y2 = min(bg_h, y + ol_h)
-        
+
         # 叠加区域大小
         ol_x1 = max(0, -x)
         ol_y1 = max(0, -y)
         ol_x2 = ol_x1 + (x2 - x1)
         ol_y2 = ol_y1 + (y2 - y1)
-        
+
         if x2 > x1 and y2 > y1:
             # 混合
             bg_region = bg[:, y1:y2, x1:x2, :]
             ol_region = ol[:, ol_y1:ol_y2, ol_x1:ol_x2, :]
-            
+
             blended = bg_region * (1 - opacity) + ol_region * opacity
             bg[:, y1:y2, x1:x2, :] = blended
-        
+
         return (bg,)
 
 
@@ -841,22 +831,22 @@ class FrameInterpolate:
     def execute(self, images: torch.Tensor, interpolate_factor: int) -> tuple:
         if interpolate_factor <= 1:
             return (images.clone(), images.shape[0])
-        
+
         total_frames = images.shape[0]
         new_frames = []
-        
+
         for i in range(total_frames - 1):
             new_frames.append(images[i])
-            
+
             # 插入中间帧
             for j in range(1, interpolate_factor):
                 weight = j / interpolate_factor
                 interpolated = images[i] * (1 - weight) + images[i + 1] * weight
                 new_frames.append(interpolated)
-        
+
         # 添加最后一帧
         new_frames.append(images[-1])
-        
+
         result = torch.stack(new_frames)
         return (result, result.shape[0])
 
@@ -882,20 +872,20 @@ class FrameDeduplicate:
 
     def execute(self, images: torch.Tensor, threshold: float) -> tuple:
         total_frames = images.shape[0]
-        
+
         if total_frames <= 1:
             return (images.clone(), total_frames)
-        
+
         # 分块处理避免内存峰值
         kept_frames = [images[0]]
-        
+
         for i in range(1, total_frames):
             # 计算与上一帧的差异
             diff = torch.mean(torch.abs(images[i] - kept_frames[-1])).item()
-            
+
             if diff > threshold:
                 kept_frames.append(images[i])
-        
+
         result = torch.stack(kept_frames)
         return (result, result.shape[0])
 

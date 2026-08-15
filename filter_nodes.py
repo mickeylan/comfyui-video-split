@@ -2,7 +2,6 @@
 滤镜/调色处理节点
 """
 import torch
-import numpy as np
 
 
 # ============================================================
@@ -36,35 +35,37 @@ class ColorAdjust:
 
     def execute(self, images: torch.Tensor, brightness: float, contrast: float,
                 saturation: float, gamma: float):
-        
-        # 分块处理
+
         def process_chunk(chunk):
             result = chunk.clone()
-            
+
             # 亮度调整
             if brightness != 0:
                 result = result + brightness
-            
+
             # 对比度调整
             if contrast != 1.0:
                 result = (result - 0.5) * contrast + 0.5
-            
+
+            # 在 gamma 调整前先 clamp，避免负数导致 NaN
+            result = torch.clamp(result, 0.0, None)
+
             # Gamma 调整
             if gamma != 1.0:
                 result = torch.pow(result, 1.0 / gamma)
-            
+
             # 饱和度调整
             if saturation != 1.0:
                 # 转换为灰度
                 gray = 0.299 * result[..., 0] + 0.587 * result[..., 1] + 0.114 * result[..., 2]
                 gray = gray.unsqueeze(-1).expand_as(result)
                 result = gray + (result - gray) * saturation
-            
+
             # 限制范围
             result = torch.clamp(result, 0.0, 1.0)
-            
+
             return result
-        
+
         return (process_chunk(images),)
 
 
@@ -92,13 +93,13 @@ class ColorTemperature:
     CATEGORY = "video/filter"
 
     def execute(self, images: torch.Tensor, temperature: float):
-        
+
         if temperature == 0:
             return (images,)
-        
+
         def process_chunk(chunk):
             result = chunk.clone()
-            
+
             if temperature > 0:
                 # 暖色调：增加红色，减少蓝色
                 result[..., 0] = result[..., 0] + temperature * 0.1
@@ -107,9 +108,9 @@ class ColorTemperature:
                 # 冷色调：减少红色，增加蓝色
                 result[..., 0] = result[..., 0] + temperature * 0.1
                 result[..., 2] = result[..., 2] - temperature * 0.1
-            
+
             return torch.clamp(result, 0.0, 1.0)
-        
+
         return (process_chunk(images),)
 
 
@@ -126,7 +127,7 @@ class ColorGradePreset:
         return {
             "required": {
                 "images": ("IMAGE", {"tooltip": "帧张量"}),
-                "preset": (["none", "vintage", "cinematic", "cold", "warm", 
+                "preset": (["none", "vintage", "cinematic", "cold", "warm",
                             "noir", "sepia", "vivid", "muted", "cyberpunk"],
                     {"default": "none", "tooltip": "预设效果"}),
                 "intensity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
@@ -140,73 +141,96 @@ class ColorGradePreset:
     CATEGORY = "video/filter"
 
     def execute(self, images: torch.Tensor, preset: str, intensity: float):
-        
+
         if preset == "none" or intensity == 0:
             return (images,)
-        
+
         def process_chunk(chunk):
             result = chunk.clone()
-            
+            # 保存原始用于混合
+            original = chunk.clone()
+
             if preset == "vintage":
                 # 复古：降低饱和度，增加暖色调
                 gray = 0.299 * result[..., 0] + 0.587 * result[..., 1] + 0.114 * result[..., 2]
                 gray = gray.unsqueeze(-1).expand_as(result)
-                result = gray + (result - gray) * 0.7
-                result[..., 0] = result[..., 0] + 0.05 * intensity
-                result[..., 1] = result[..., 1] + 0.02 * intensity
-            
+                processed = gray + (result - gray) * 0.7
+                processed[..., 0] = processed[..., 0] + 0.05
+                processed[..., 1] = processed[..., 1] + 0.02
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             elif preset == "cinematic":
-                # 电影感：高对比度，暗角效果
-                result = (result - 0.5) * 1.3 + 0.5
-                # 添加轻微蓝调
-                result[..., 2] = result[..., 2] + 0.05 * intensity
-            
+                # 电影感：高对比度，添加蓝调
+                processed = (result - 0.5) * 1.3 + 0.5
+                processed[..., 2] = processed[..., 2] + 0.05
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             elif preset == "cold":
                 # 冷色调
-                result[..., 0] = result[..., 0] - 0.1 * intensity
-                result[..., 2] = result[..., 2] + 0.1 * intensity
-            
+                processed = result.clone()
+                processed[..., 0] = processed[..., 0] - 0.1
+                processed[..., 2] = processed[..., 2] + 0.1
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             elif preset == "warm":
                 # 暖色调
-                result[..., 0] = result[..., 0] + 0.1 * intensity
-                result[..., 1] = result[..., 1] + 0.05 * intensity
-                result[..., 2] = result[..., 2] - 0.05 * intensity
-            
+                processed = result.clone()
+                processed[..., 0] = processed[..., 0] + 0.1
+                processed[..., 1] = processed[..., 1] + 0.05
+                processed[..., 2] = processed[..., 2] - 0.05
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             elif preset == "noir":
                 # 黑白高对比
                 gray = 0.299 * result[..., 0] + 0.587 * result[..., 1] + 0.114 * result[..., 2]
                 gray = gray.unsqueeze(-1).expand_as(result)
-                result = gray
-                result = (result - 0.5) * 1.5 + 0.5
-            
+                processed = gray
+                processed = (processed - 0.5) * 1.5 + 0.5
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             elif preset == "sepia":
                 # 棕褐色调
                 gray = 0.299 * result[..., 0] + 0.587 * result[..., 1] + 0.114 * result[..., 2]
-                result[..., 0] = gray + 0.15 * intensity
-                result[..., 1] = gray + 0.05 * intensity
-                result[..., 2] = gray - 0.1 * intensity
-            
+                processed = result.clone()
+                processed[..., 0] = gray + 0.15
+                processed[..., 1] = gray + 0.05
+                processed[..., 2] = gray - 0.1
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             elif preset == "vivid":
                 # 鲜艳：增加饱和度和对比度
                 gray = 0.299 * result[..., 0] + 0.587 * result[..., 1] + 0.114 * result[..., 2]
                 gray = gray.unsqueeze(-1).expand_as(result)
-                result = gray + (result - gray) * 1.5
-                result = (result - 0.5) * 1.2 + 0.5
-            
+                processed = gray + (result - gray) * 1.5
+                processed = (processed - 0.5) * 1.2 + 0.5
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             elif preset == "muted":
                 # 柔和：降低饱和度
                 gray = 0.299 * result[..., 0] + 0.587 * result[..., 1] + 0.114 * result[..., 2]
                 gray = gray.unsqueeze(-1).expand_as(result)
-                result = gray + (result - gray) * 0.6
-            
+                processed = gray + (result - gray) * 0.6
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             elif preset == "cyberpunk":
                 # 赛博朋克：霓虹色调
-                result[..., 0] = result[..., 0] * 0.8 + 0.2 * intensity
-                result[..., 2] = result[..., 2] * 1.3
-                result = (result - 0.5) * 1.3 + 0.5
-            
+                processed = result.clone()
+                processed[..., 0] = processed[..., 0] * 0.8 + 0.2
+                processed[..., 2] = processed[..., 2] * 1.3
+                processed = (processed - 0.5) * 1.3 + 0.5
+                # 统一混合
+                result = original + (processed - original) * intensity
+
             return torch.clamp(result, 0.0, 1.0)
-        
+
         return (process_chunk(images),)
 
 
@@ -236,28 +260,28 @@ class Vignette:
     CATEGORY = "video/filter"
 
     def execute(self, images: torch.Tensor, intensity: float, radius: float):
-        
+
         if intensity == 0:
             return (images,)
-        
+
         height = images.shape[1]
         width = images.shape[2]
-        
-        # 创建暗角 mask
-        y = torch.linspace(-1, 1, height)
-        x = torch.linspace(-1, 1, width)
+
+        # 在输入的 device/dtype 上创建暗角 mask
+        y = torch.linspace(-1, 1, height, device=images.device, dtype=images.dtype)
+        x = torch.linspace(-1, 1, width, device=images.device, dtype=images.dtype)
         Y, X = torch.meshgrid(y, x, indexing='ij')
-        
+
         # 计算距离中心的距离
         dist = torch.sqrt(X**2 + Y**2)
-        
+
         # 创建渐变 mask
         mask = torch.clamp(1 - dist / radius, 0, 1)
         mask = mask.unsqueeze(0).unsqueeze(-1)  # [1, H, W, 1]
-        
+
         # 应用暗角
         result = images * (1 - intensity * (1 - mask))
-        
+
         return (result,)
 
 

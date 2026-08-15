@@ -1,29 +1,57 @@
 """
-转场效果处理节点
+转场效果处理节点。
 """
 import torch
-import numpy as np
-import math
+import torch.nn.functional as F
 
 
-# ============================================================
-# Transition Slide - 滑动转场
-# ============================================================
+def _prepare_transition(images1, images2, transition_frames):
+    if images1.shape[1:] != images2.shape[1:]:
+        raise ValueError(
+            f"Transition inputs must have the same frame shape, got {tuple(images1.shape[1:])} and {tuple(images2.shape[1:])}."
+        )
+
+    overlap = min(transition_frames, images1.shape[0], images2.shape[0])
+    first = images1[:-overlap]
+    tail1 = images1[-overlap:]
+    head2 = images2[:overlap]
+    last = images2[overlap:]
+    progress = torch.linspace(0.0, 1.0, overlap + 2, device=images1.device, dtype=images1.dtype)[1:-1]
+    return first, tail1, head2, last, progress
+
+
+def _finish_transition(first, transition, last):
+    return (torch.cat((first, transition, last), dim=0),)
+
+
+def _scale_frame(frame, scale):
+    height, width = frame.shape[:2]
+    channels_first = frame.permute(2, 0, 1).unsqueeze(0)
+    scaled_height = max(1, round(height * scale))
+    scaled_width = max(1, round(width * scale))
+    scaled = F.interpolate(channels_first, size=(scaled_height, scaled_width), mode="bilinear", align_corners=False)
+
+    if scale >= 1.0:
+        top = (scaled_height - height) // 2
+        left = (scaled_width - width) // 2
+        scaled = scaled[:, :, top:top + height, left:left + width]
+    else:
+        pad_height = height - scaled_height
+        pad_width = width - scaled_width
+        scaled = F.pad(scaled, (pad_width // 2, pad_width - pad_width // 2, pad_height // 2, pad_height - pad_height // 2))
+
+    return scaled.squeeze(0).permute(1, 2, 0)
+
 
 class TransitionSlide:
-    """
-    滑动转场效果。
-    """
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "images1": ("IMAGE", {"tooltip": "视频1帧张量"}),
                 "images2": ("IMAGE", {"tooltip": "视频2帧张量"}),
-                "transition_frames": ("INT", {"default": 30, "min": 1, "max": 300,
-                    "tooltip": "转场帧数"}),
-                "direction": (["left", "right", "up", "down"], {"default": "left",
-                    "tooltip": "滑动方向"}),
+                "transition_frames": ("INT", {"default": 30, "min": 1, "max": 300, "tooltip": "转场帧数"}),
+                "direction": (["left", "right", "up", "down"], {"default": "left", "tooltip": "滑动方向"}),
             },
         }
 
@@ -32,83 +60,41 @@ class TransitionSlide:
     FUNCTION = "execute"
     CATEGORY = "video/transition"
 
-    def execute(self, images1: torch.Tensor, images2: torch.Tensor,
-                transition_frames: int, direction: str):
-        
-        # 取两个视频的最小帧数
-        min_frames = min(images1.shape[0], images2.shape[0])
-        
-        height = images1.shape[1]
-        width = images1.shape[2]
-        
-        result_frames = []
-        
-        # 前 50% 显示视频1
-        half_frames = min_frames // 2
-        
-        for i in range(half_frames):
-            result_frames.append(images1[i])
-        
-        # 转场效果
-        for i in range(transition_frames):
-            progress = i / transition_frames
-            
-            # 获取当前帧
-            frame1_idx = min(half_frames + i, images1.shape[0] - 1)
-            frame2_idx = min(i, images2.shape[0] - 1)
-            
-            frame1 = images1[frame1_idx]
-            frame2 = images2[frame2_idx]
-            
-            # 创建转场帧
-            result = torch.zeros_like(frame1)
-            
-            if direction == "left":
-                offset = int(width * progress)
-                result[:, :width-offset, :] = frame1[:, offset:, :]
-                result[:, width-offset:, :] = frame2[:, :offset, :]
-            elif direction == "right":
-                offset = int(width * progress)
-                result[:, offset:, :] = frame1[:, :width-offset, :]
-                result[:, :offset, :] = frame2[:, width-offset:, :]
-            elif direction == "up":
-                offset = int(height * progress)
-                result[:height-offset, :, :] = frame1[offset:, :, :]
-                result[height-offset:, :, :] = frame2[:offset, :, :]
-            elif direction == "down":
-                offset = int(height * progress)
-                result[offset:, :, :] = frame1[:height-offset, :, :]
-                result[:offset, :, :] = frame2[height-offset:, :, :]
-            
-            result_frames.append(result)
-        
-        # 剩余帧显示视频2
-        remaining_start = half_frames + transition_frames
-        for i in range(remaining_start, min_frames):
-            idx = min(i, images2.shape[0] - 1)
-            result_frames.append(images2[idx])
-        
-        return (torch.stack(result_frames),)
+    def execute(self, images1, images2, transition_frames, direction):
+        first, tail1, head2, last, progress = _prepare_transition(images1, images2, transition_frames)
+        height, width = images1.shape[1:3]
+        frames = []
+        for frame1, frame2, amount in zip(tail1, head2, progress):
+            result = torch.empty_like(frame1)
+            if direction in ("left", "right"):
+                offset = min(width, round(width * amount.item()))
+                if direction == "left":
+                    result[:, :width - offset] = frame1[:, offset:]
+                    result[:, width - offset:] = frame2[:, :offset]
+                else:
+                    result[:, offset:] = frame1[:, :width - offset]
+                    result[:, :offset] = frame2[:, width - offset:]
+            else:
+                offset = min(height, round(height * amount.item()))
+                if direction == "up":
+                    result[:height - offset] = frame1[offset:]
+                    result[height - offset:] = frame2[:offset]
+                else:
+                    result[offset:] = frame1[:height - offset]
+                    result[:offset] = frame2[height - offset:]
+            frames.append(result)
+        return _finish_transition(first, torch.stack(frames), last)
 
-
-# ============================================================
-# Transition Zoom - 缩放转场
-# ============================================================
 
 class TransitionZoom:
-    """
-    缩放转场效果。
-    """
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "images1": ("IMAGE", {"tooltip": "视频1帧张量"}),
                 "images2": ("IMAGE", {"tooltip": "视频2帧张量"}),
-                "transition_frames": ("INT", {"default": 30, "min": 1, "max": 300,
-                    "tooltip": "转场帧数"}),
-                "mode": (["zoom_in", "zoom_out", "cross_zoom"], {"default": "cross_zoom",
-                    "tooltip": "缩放模式"}),
+                "transition_frames": ("INT", {"default": 30, "min": 1, "max": 300, "tooltip": "转场帧数"}),
+                "mode": (["zoom_in", "zoom_out", "cross_zoom"], {"default": "cross_zoom", "tooltip": "缩放模式"}),
             },
         }
 
@@ -117,82 +103,34 @@ class TransitionZoom:
     FUNCTION = "execute"
     CATEGORY = "video/transition"
 
-    def execute(self, images1: torch.Tensor, images2: torch.Tensor,
-                transition_frames: int, mode: str):
-        
-        min_frames = min(images1.shape[0], images2.shape[0])
-        height = images1.shape[1]
-        width = images1.shape[2]
-        
-        result_frames = []
-        half_frames = min_frames // 2
-        
-        # 前半段显示视频1
-        for i in range(half_frames):
-            result_frames.append(images1[i])
-        
-        # 转场效果
-        for i in range(transition_frames):
-            progress = i / transition_frames
-            
-            frame1_idx = min(half_frames + i, images1.shape[0] - 1)
-            frame2_idx = min(i, images2.shape[0] - 1)
-            
-            frame1 = images1[frame1_idx]
-            frame2 = images2[frame2_idx]
-            
-            result = torch.zeros_like(frame1)
-            
+    def execute(self, images1, images2, transition_frames, mode):
+        first, tail1, head2, last, progress = _prepare_transition(images1, images2, transition_frames)
+        frames = []
+        for frame1, frame2, amount in zip(tail1, head2, progress):
+            value = amount.item()
             if mode == "zoom_in":
-                # 视频1 放大消失，视频2 从中心出现
-                scale = 1 + progress
-                # 简化处理：使用 alpha 混合
-                alpha = 1 - progress
-                result = frame1 * alpha + frame2 * (1 - alpha)
-            
+                scaled1 = _scale_frame(frame1, 1.0 + value * 0.5)
+                scaled2 = frame2
             elif mode == "zoom_out":
-                # 视频1 缩小消失，视频2 放大出现
-                alpha = progress
-                result = frame1 * (1 - alpha) + frame2 * alpha
-            
-            elif mode == "cross_zoom":
-                # 交叉缩放
-                scale1 = 1 + progress * 0.5
-                scale2 = 1 + (1 - progress) * 0.5
-                # 简化：使用混合
-                result = frame1 * (1 - progress) + frame2 * progress
-            
-            result_frames.append(result)
-        
-        # 后半段显示视频2
-        remaining_start = half_frames + transition_frames
-        for i in range(remaining_start, min_frames):
-            idx = min(i, images2.shape[0] - 1)
-            result_frames.append(images2[idx])
-        
-        return (torch.stack(result_frames),)
+                scaled1 = _scale_frame(frame1, 1.0 - value * 0.5)
+                scaled2 = frame2
+            else:
+                scaled1 = _scale_frame(frame1, 1.0 + value * 0.35)
+                scaled2 = _scale_frame(frame2, 0.65 + value * 0.35)
+            frames.append(scaled1 * (1.0 - amount) + scaled2 * amount)
+        return _finish_transition(first, torch.stack(frames), last)
 
-
-# ============================================================
-# Transition Wipe - 擦除转场
-# ============================================================
 
 class TransitionWipe:
-    """
-    擦除转场效果。
-    """
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "images1": ("IMAGE", {"tooltip": "视频1帧张量"}),
                 "images2": ("IMAGE", {"tooltip": "视频2帧张量"}),
-                "transition_frames": ("INT", {"default": 30, "min": 1, "max": 300,
-                    "tooltip": "转场帧数"}),
-                "direction": (["left_to_right", "right_to_left", "top_to_bottom", "bottom_to_top"],
-                    {"default": "left_to_right", "tooltip": "擦除方向"}),
-                "softness": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.0,
-                    "tooltip": "边缘柔和度"}),
+                "transition_frames": ("INT", {"default": 30, "min": 1, "max": 300, "tooltip": "转场帧数"}),
+                "direction": (["left_to_right", "right_to_left", "top_to_bottom", "bottom_to_top"], {"default": "left_to_right", "tooltip": "擦除方向"}),
+                "softness": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.0, "tooltip": "边缘柔和度"}),
             },
         }
 
@@ -201,74 +139,32 @@ class TransitionWipe:
     FUNCTION = "execute"
     CATEGORY = "video/transition"
 
-    def execute(self, images1: torch.Tensor, images2: torch.Tensor,
-                transition_frames: int, direction: str, softness: float):
-        
-        min_frames = min(images1.shape[0], images2.shape[0])
-        height = images1.shape[1]
-        width = images1.shape[2]
-        
-        result_frames = []
-        half_frames = min_frames // 2
-        
-        # 前半段
-        for i in range(half_frames):
-            result_frames.append(images1[i])
-        
-        # 转场
-        for i in range(transition_frames):
-            progress = i / transition_frames
-            
-            frame1_idx = min(half_frames + i, images1.shape[0] - 1)
-            frame2_idx = min(i, images2.shape[0] - 1)
-            
-            frame1 = images1[frame1_idx]
-            frame2 = images2[frame2_idx]
-            
-            result = frame1.clone()
-            
-            # 创建 mask
-            if direction == "left_to_right":
-                split = int(width * progress)
-                soft_width = int(width * softness)
-                result[:, :split, :] = frame2[:, :split, :]
-            elif direction == "right_to_left":
-                split = int(width * (1 - progress))
-                result[:, split:, :] = frame2[:, split:, :]
-            elif direction == "top_to_bottom":
-                split = int(height * progress)
-                result[:split, :, :] = frame2[:split, :, :]
-            elif direction == "bottom_to_top":
-                split = int(height * (1 - progress))
-                result[split:, :, :] = frame2[split:, :, :]
-            
-            result_frames.append(result)
-        
-        # 后半段
-        remaining_start = half_frames + transition_frames
-        for i in range(remaining_start, min_frames):
-            idx = min(i, images2.shape[0] - 1)
-            result_frames.append(images2[idx])
-        
-        return (torch.stack(result_frames),)
+    def execute(self, images1, images2, transition_frames, direction, softness):
+        first, tail1, head2, last, progress = _prepare_transition(images1, images2, transition_frames)
+        height, width = images1.shape[1:3]
+        horizontal = direction in ("left_to_right", "right_to_left")
+        length = width if horizontal else height
+        positions = torch.linspace(0.0, 1.0, length, device=images1.device, dtype=images1.dtype)
+        if direction in ("right_to_left", "bottom_to_top"):
+            positions = positions.flip(0)
 
+        frames = []
+        edge = max(softness, 1.0 / length)
+        for frame1, frame2, amount in zip(tail1, head2, progress):
+            mask = ((amount - positions) / edge + 0.5).clamp(0.0, 1.0)
+            mask = mask.view(1, width, 1) if horizontal else mask.view(height, 1, 1)
+            frames.append(frame1 * (1.0 - mask) + frame2 * mask)
+        return _finish_transition(first, torch.stack(frames), last)
 
-# ============================================================
-# Transition Dissolve - 溶解转场
-# ============================================================
 
 class TransitionDissolve:
-    """
-    溶解转场效果（淡入淡出混合）。
-    """
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "images1": ("IMAGE", {"tooltip": "视频1帧张量"}),
                 "images2": ("IMAGE", {"tooltip": "视频2帧张量"}),
-                "transition_frames": ("INT", {"default": 30, "min": 1, "max": 300,
-                    "tooltip": "转场帧数"}),
+                "transition_frames": ("INT", {"default": 30, "min": 1, "max": 300, "tooltip": "转场帧数"}),
             },
         }
 
@@ -277,43 +173,12 @@ class TransitionDissolve:
     FUNCTION = "execute"
     CATEGORY = "video/transition"
 
-    def execute(self, images1: torch.Tensor, images2: torch.Tensor,
-                transition_frames: int):
-        
-        min_frames = min(images1.shape[0], images2.shape[0])
-        result_frames = []
-        half_frames = min_frames // 2
-        
-        # 前半段
-        for i in range(half_frames):
-            result_frames.append(images1[i])
-        
-        # 转场：淡入淡出混合
-        for i in range(transition_frames):
-            progress = i / transition_frames
-            
-            frame1_idx = min(half_frames + i, images1.shape[0] - 1)
-            frame2_idx = min(i, images2.shape[0] - 1)
-            
-            frame1 = images1[frame1_idx]
-            frame2 = images2[frame2_idx]
-            
-            # 混合
-            result = frame1 * (1 - progress) + frame2 * progress
-            result_frames.append(result)
-        
-        # 后半段
-        remaining_start = half_frames + transition_frames
-        for i in range(remaining_start, min_frames):
-            idx = min(i, images2.shape[0] - 1)
-            result_frames.append(images2[idx])
-        
-        return (torch.stack(result_frames),)
+    def execute(self, images1, images2, transition_frames):
+        first, tail1, head2, last, progress = _prepare_transition(images1, images2, transition_frames)
+        weights = progress.view(-1, 1, 1, 1)
+        transition = tail1 * (1.0 - weights) + head2 * weights
+        return _finish_transition(first, transition, last)
 
-
-# ============================================================
-# Node Mappings
-# ============================================================
 
 TRANSITION_NODE_CLASS_MAPPINGS = {
     "TransitionSlide": TransitionSlide,

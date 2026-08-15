@@ -3,39 +3,78 @@
 """
 import torch
 import numpy as np
-import math
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 import os
 import platform
+import folder_paths
 
 
 # ============================================================
 # 中文字体加载辅助函数
 # ============================================================
 
+def _is_allowed_font_path(font_path):
+    """
+    检查字体路径是否在允许的目录内（系统字体目录或 ComfyUI input 目录）。
+
+    Args:
+        font_path: 要检查的字体路径
+
+    Returns:
+        bool: 路径是否允许
+    """
+    if not font_path or not os.path.isabs(font_path):
+        return False
+
+    # 系统字体目录
+    system = platform.system()
+    system_font_dirs = []
+    if system == "Windows":
+        system_font_dirs = ["C:/Windows/Fonts"]
+    elif system == "Darwin":
+        system_font_dirs = ["/System/Library/Fonts", "/Library/Fonts"]
+    elif system == "Linux":
+        system_font_dirs = ["/usr/share/fonts", "/usr/local/share/fonts"]
+
+    # ComfyUI input 目录
+    try:
+        input_dir = folder_paths.get_input_directory()
+        system_font_dirs.append(input_dir)
+    except Exception:
+        pass
+
+    # 检查路径是否在允许的目录内
+    for allowed_dir in system_font_dirs:
+        if os.path.isdir(allowed_dir):
+            if folder_paths.is_within_directory(os.path.abspath(allowed_dir), os.path.abspath(font_path)):
+                return True
+
+    return False
+
+
 def get_chinese_font(font_size=32, font_path=None):
     """
     获取支持中文的字体。
-    
+
     Args:
         font_size: 字体大小
-        font_path: 用户指定的字体路径
-    
+        font_path: 用户指定的字体路径（必须在系统字体目录或 ComfyUI input 目录内）
+
     Returns:
         PIL ImageFont 对象
     """
-    # 如果用户指定了字体路径，尝试加载
-    if font_path and os.path.exists(font_path):
+    # 如果用户指定了字体路径，验证并尝试加载
+    if font_path and _is_allowed_font_path(font_path) and os.path.exists(font_path):
         try:
             return ImageFont.truetype(font_path, font_size)
         except Exception as e:
             print(f"[Video Split] Failed to load font {font_path}: {e}")
-    
+
     # 尝试系统自带的中文字体
     system = platform.system()
-    
+
     chinese_fonts = []
-    
+
     if system == "Windows":
         # Windows 系统中文字体
         chinese_fonts = [
@@ -60,7 +99,7 @@ def get_chinese_font(font_size=32, font_path=None):
             "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
             "/usr/share/fonts/truetype/arphic/uming.ttc",
         ]
-    
+
     # 尝试加载系统中文字体
     for font_file in chinese_fonts:
         if os.path.exists(font_file):
@@ -68,7 +107,7 @@ def get_chinese_font(font_size=32, font_path=None):
                 return ImageFont.truetype(font_file, font_size)
             except Exception as e:
                 continue
-    
+
     # 如果都失败了，返回默认字体并警告
     print("[Video Split] Warning: No Chinese font found. Chinese text may not display correctly.")
     print("[Video Split] Please specify a Chinese font path, e.g.: C:/Windows/Fonts/msyh.ttc")
@@ -103,31 +142,26 @@ class TextOverlay:
     def execute(self, images: torch.Tensor, text: str, x: int, y: int,
                 font_size: int, font_color: str, font_path: str,
                 stroke_width: int, stroke_color: str):
-        
-        total_frames = images.shape[0]
-        height = images.shape[1]
-        width = images.shape[2]
-        
-        # 分块处理
+
         def process_chunk(chunk):
             result_frames = []
-            
+
             # 使用支持中文的字体
             font = get_chinese_font(font_size, font_path)
-            
+
             for i in range(chunk.shape[0]):
                 # 转换为 PIL Image
                 frame = chunk[i].cpu().numpy()
                 frame = (frame * 255).astype('uint8')
                 pil_image = Image.fromarray(frame)
-                
+
                 # 创建绘图对象
                 draw = ImageDraw.Draw(pil_image)
-                
+
                 # 解析颜色
                 fill_color = font_color if font_color else "#FFFFFF"
                 stroke_fill = stroke_color if stroke_color else "#000000"
-                
+
                 # 绘制文字
                 draw.text(
                     (x, y),
@@ -137,16 +171,15 @@ class TextOverlay:
                     stroke_width=stroke_width,
                     stroke_fill=stroke_fill
                 )
-                
-                # 转回张量
+
+                # 转回张量，保留输入的 device/dtype
                 frame_array = np.array(pil_image).astype(np.float32) / 255.0
-                result_frames.append(torch.from_numpy(frame_array))
-            
+                frame_tensor = torch.from_numpy(frame_array).to(device=chunk.device, dtype=chunk.dtype)
+                result_frames.append(frame_tensor)
+
             return torch.stack(result_frames)
-        
-        # 处理
-        result = process_chunk(images)
-        
+
+        result = torch.cat([process_chunk(images[start:start + 32]) for start in range(0, images.shape[0], 32)])
         return (result,)
 
 
@@ -182,56 +215,67 @@ class TextAnimation:
     def execute(self, images: torch.Tensor, text: str, x: int, y: int,
                 font_size: int, animation_type: str, animation_duration: float,
                 fps: float, font_color: str):
-        
-        total_frames = images.shape[0]
+
         animation_frames = int(animation_duration * fps)
-        
-        # 分块处理
-        def process_chunk(chunk):
+
+        def process_chunk(chunk, frame_offset):
             result_frames = []
             # 使用支持中文的字体
             font = get_chinese_font(font_size)
-            
+
             for i in range(chunk.shape[0]):
                 frame = chunk[i].cpu().numpy()
                 frame = (frame * 255).astype('uint8')
                 pil_image = Image.fromarray(frame)
                 draw = ImageDraw.Draw(pil_image)
-                
-                # 计算动画进度
-                progress = min(1.0, i / animation_frames) if animation_frames > 0 else 1.0
-                
+
+                # 分块处理时仍使用整段视频中的绝对帧索引。
+                frame_index = frame_offset + i
+                progress = min(1.0, frame_index / animation_frames) if animation_frames > 0 else 1.0
+
                 # 根据动画类型生成当前显示的文字
                 if animation_type == "typewriter":
                     # 打字机效果：逐字显示
                     char_count = int(len(text) * progress)
                     current_text = text[:char_count]
-                
+                    draw.text((x, y), current_text, font=font, fill=font_color)
+
                 elif animation_type == "fade_in":
-                    # 淡入效果：改变透明度
-                    current_text = text
-                    # 这里可以通过调整颜色透明度实现
-                
+                    rgba = ImageColor.getrgb(font_color) + (round(progress * 255),)
+                    temp_layer = Image.new("RGBA", pil_image.size, (0, 0, 0, 0))
+                    ImageDraw.Draw(temp_layer).text((x, y), text, font=font, fill=rgba)
+                    pil_image = Image.alpha_composite(pil_image.convert("RGBA"), temp_layer).convert("RGB")
+                    # 转回张量，保留输入的 device/dtype
+                    frame_array = np.array(pil_image).astype(np.float32) / 255.0
+                    frame_tensor = torch.from_numpy(frame_array).to(device=chunk.device, dtype=chunk.dtype)
+                    result_frames.append(frame_tensor)
+                    continue
+
                 elif animation_type == "slide_in":
                     # 滑入效果：改变位置
                     current_text = text
                     slide_x = int((1 - progress) * 200)  # 从右侧滑入
                     x_pos = x + slide_x
                     draw.text((x_pos, y), current_text, font=font, fill=font_color)
-                    result_frames.append(torch.from_numpy(np.array(pil_image).astype(np.float32) / 255.0))
+                    # 转回张量，保留输入的 device/dtype
+                    frame_array = np.array(pil_image).astype(np.float32) / 255.0
+                    frame_tensor = torch.from_numpy(frame_array).to(device=chunk.device, dtype=chunk.dtype)
+                    result_frames.append(frame_tensor)
                     continue
-                
-                # 绘制文字
-                draw.text((x, y), current_text, font=font, fill=font_color)
-                
-                # 转回张量
+                else:
+                    draw.text((x, y), text, font=font, fill=font_color)
+
+                # 转回张量，保留输入的 device/dtype
                 frame_array = np.array(pil_image).astype(np.float32) / 255.0
-                result_frames.append(torch.from_numpy(frame_array))
-            
+                frame_tensor = torch.from_numpy(frame_array).to(device=chunk.device, dtype=chunk.dtype)
+                result_frames.append(frame_tensor)
+
             return torch.stack(result_frames)
-        
-        result = process_chunk(images)
-        
+
+        result = torch.cat([
+            process_chunk(images[start:start + 32], start)
+            for start in range(0, images.shape[0], 32)
+        ])
         return (result,)
 
 
@@ -262,10 +306,14 @@ class SubtitleImport:
     CATEGORY = "video/text"
 
     def parse_srt(self, srt_content: str):
-        """解析 SRT 字幕格式"""
+        """解析标准 SRT 字幕格式
+
+        标准 SRT 时间码格式: 00:00:00,000 --> 00:00:02,000
+        - 小时:分钟:秒,毫秒 (用逗号分隔秒和毫秒)
+        """
         subtitles = []
         blocks = srt_content.strip().split('\n\n')
-        
+
         for block in blocks:
             lines = block.strip().split('\n')
             if len(lines) >= 3:
@@ -273,69 +321,83 @@ class SubtitleImport:
                     # 解析时间码
                     time_line = lines[1]
                     start_time, end_time = time_line.split(' --> ')
-                    
-                    # 转换为毫秒
+
+                    # 转换为毫秒 - 标准 SRT 使用逗号分隔秒和毫秒
                     def time_to_ms(time_str):
-                        h, m, s = time_str.replace(',', ':').split(':')
-                        return int(h) * 3600000 + int(m) * 60000 + int(float(s) * 1000)
-                    
+                        # 移除可能的空格
+                        time_str = time_str.strip()
+                        # 分离秒和毫秒（用逗号）
+                        if ',' in time_str:
+                            seconds_part, ms_part = time_str.split(',')
+                        elif '.' in time_str:
+                            # 也支持点号作为分隔符
+                            seconds_part, ms_part = time_str.split('.')
+                        else:
+                            seconds_part = time_str
+                            ms_part = '0'
+
+                        # 分离时:分:秒
+                        h, m, s = seconds_part.split(':')
+                        return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms_part)
+
                     start_ms = time_to_ms(start_time)
                     end_ms = time_to_ms(end_time)
-                    
+
                     # 解析文字
                     text = '\n'.join(lines[2:])
-                    
+
                     subtitles.append({
                         'start_ms': start_ms,
                         'end_ms': end_ms,
                         'text': text
                     })
-                except:
+                except (ValueError, IndexError, AttributeError) as e:
+                    # 只捕获特定异常，不使用裸 except
+                    print(f"[Video Split] Failed to parse SRT block: {e}")
                     continue
-        
+
         return subtitles
 
     def execute(self, images: torch.Tensor, srt_content: str, fps: float,
                 font_size: int, y_offset: int, font_color: str):
-        
+
         # 解析字幕
         subtitles = self.parse_srt(srt_content) if srt_content else []
-        
+
         if not subtitles:
             return (images,)
-        
-        total_frames = images.shape[0]
+
         height = images.shape[1]
         width = images.shape[2]
-        
+
         # 使用支持中文的字体
         font = get_chinese_font(font_size)
-        
-        def process_chunk(chunk):
+
+        def process_chunk(chunk, frame_offset):
             result_frames = []
-            
+
             for i in range(chunk.shape[0]):
                 frame = chunk[i].cpu().numpy()
                 frame = (frame * 255).astype('uint8')
                 pil_image = Image.fromarray(frame)
                 draw = ImageDraw.Draw(pil_image)
-                
-                # 计算当前帧时间（毫秒）
-                current_ms = int(i * 1000 / fps)
-                
+
+                # 分块处理时仍使用整段视频中的绝对帧索引。
+                current_ms = int((frame_offset + i) * 1000 / fps)
+
                 # 查找当前应显示的字幕
                 current_text = ""
                 for sub in subtitles:
                     if sub['start_ms'] <= current_ms <= sub['end_ms']:
                         current_text = sub['text']
                         break
-                
+
                 # 绘制字幕
                 if current_text:
                     # 计算 Y 位置
                     y_pos = height + y_offset - font_size if y_offset < 0 else y_offset
                     x_pos = width // 2
-                    
+
                     draw.text(
                         (x_pos, y_pos),
                         current_text,
@@ -343,14 +405,18 @@ class SubtitleImport:
                         fill=font_color,
                         anchor="mm"  # 居中对齐
                     )
-                
+
+                # 转回张量，保留输入的 device/dtype
                 frame_array = np.array(pil_image).astype(np.float32) / 255.0
-                result_frames.append(torch.from_numpy(frame_array))
-            
+                frame_tensor = torch.from_numpy(frame_array).to(device=chunk.device, dtype=chunk.dtype)
+                result_frames.append(frame_tensor)
+
             return torch.stack(result_frames)
-        
-        result = process_chunk(images)
-        
+
+        result = torch.cat([
+            process_chunk(images[start:start + 32], start)
+            for start in range(0, images.shape[0], 32)
+        ])
         return (result,)
 
 
@@ -368,7 +434,7 @@ class TextPositionPreset:
             "required": {
                 "images": ("IMAGE", {"tooltip": "帧张量"}),
                 "text": ("STRING", {"default": "文字内容", "multiline": True, "tooltip": "文字"}),
-                "position": (["top_center", "top_left", "top_right", 
+                "position": (["top_center", "top_left", "top_right",
                               "center", "bottom_center", "bottom_left", "bottom_right"],
                     {"default": "bottom_center", "tooltip": "位置预设"}),
                 "font_size": ("INT", {"default": 32, "min": 8, "max": 200}),
@@ -384,10 +450,10 @@ class TextPositionPreset:
 
     def execute(self, images: torch.Tensor, text: str, position: str,
                 font_size: int, font_color: str, margin: int):
-        
+
         height = images.shape[1]
         width = images.shape[2]
-        
+
         # 计算位置
         positions = {
             "top_center": (width // 2, margin, "mm"),
@@ -398,12 +464,33 @@ class TextPositionPreset:
             "bottom_left": (margin, height - margin, "lb"),
             "bottom_right": (width - margin, height - margin, "rb"),
         }
-        
+
         x, y, anchor = positions.get(position, (width // 2, height - margin, "mm"))
-        
-        # 使用 TextOverlay，并指定中文字体
-        overlay = TextOverlay()
-        return overlay.execute(images, text, x, y, font_size, font_color, "", 0, "#000000")
+
+        # 直接处理，不调用 TextOverlay（因为 TextOverlay 不支持 anchor）
+        # 使用支持中文的字体
+        font = get_chinese_font(font_size)
+
+        def process_chunk(chunk):
+            result_frames = []
+            for i in range(chunk.shape[0]):
+                frame = chunk[i].cpu().numpy()
+                frame = (frame * 255).astype('uint8')
+                pil_image = Image.fromarray(frame)
+                draw = ImageDraw.Draw(pil_image)
+
+                # 使用 anchor 进行居中对齐
+                draw.text((x, y), text, font=font, fill=font_color, anchor=anchor)
+
+                # 转回张量，保留输入的 device/dtype
+                frame_array = np.array(pil_image).astype(np.float32) / 255.0
+                frame_tensor = torch.from_numpy(frame_array).to(device=chunk.device, dtype=chunk.dtype)
+                result_frames.append(frame_tensor)
+
+            return torch.stack(result_frames)
+
+        result = torch.cat([process_chunk(images[start:start + 32]) for start in range(0, images.shape[0], 32)])
+        return (result,)
 
 
 # ============================================================

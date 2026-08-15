@@ -164,9 +164,6 @@ const addDocumentation = (nodeData, nodeType, opts = { icon_size: 14, icon_margi
     opts = opts || {};
     const iconSize = opts.icon_size ? opts.icon_size : 14;
     const iconMargin = opts.icon_margin ? opts.icon_margin : 4;
-    let docElement = null;
-    let contentWrapper = null;
-    
     const description = nodeData.description;
     if (!description) return;
     
@@ -177,32 +174,24 @@ const addDocumentation = (nodeData, nodeType, opts = { icon_size: 14, icon_margi
         
         const x = this.size[0] - iconSize - iconMargin;
         
-        // 创建弹出窗口
-        if (this.show_doc && docElement === null) {
+        if (this.show_doc && !this._videoSplitDocElement) {
             const popup = createDocPopup(
                 description,
                 this.docCtrl.signal,
                 () => {
-                    this.show_doc = !this.show_doc;
-                    if (docElement.parentNode) {
-                        docElement.parentNode.removeChild(docElement);
-                    }
-                    docElement = null;
-                    contentWrapper = null;
+                    this.show_doc = false;
+                    this._videoSplitDocElement?.remove();
+                    this._videoSplitDocElement = null;
                 }
             );
-            docElement = popup.docElement;
-            contentWrapper = popup.contentWrapper;
+            this._videoSplitDocElement = popup.docElement;
         }
-        // 关闭弹出窗口
-        else if (!this.show_doc && docElement !== null) {
-            if (docElement.parentNode) {
-                docElement.parentNode.removeChild(docElement);
-            }
-            docElement = null;
+        else if (!this.show_doc && this._videoSplitDocElement) {
+            this._videoSplitDocElement.remove();
+            this._videoSplitDocElement = null;
         }
-        // 更新弹出窗口位置
-        if (this.show_doc && docElement !== null) {
+        if (this.show_doc && this._videoSplitDocElement) {
+            const docElement = this._videoSplitDocElement;
             const rect = ctx.canvas.getBoundingClientRect();
             const scaleX = rect.width / ctx.canvas.width;
             const scaleY = rect.height / ctx.canvas.height;
@@ -257,7 +246,7 @@ const addDocumentation = (nodeData, nodeType, opts = { icon_size: 14, icon_margi
             if (this.show_doc) {
                 this.docCtrl = new AbortController();
             } else {
-                this.docCtrl.abort();
+                this.docCtrl?.abort();
             }
             return true;
         }
@@ -268,11 +257,9 @@ const addDocumentation = (nodeData, nodeType, opts = { icon_size: 14, icon_margi
     const onRem = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function() {
         const r = onRem ? onRem.apply(this, []) : undefined;
-        if (docElement) {
-            docElement.remove();
-            docElement = null;
-            contentWrapper = null;
-        }
+        this.docCtrl?.abort();
+        this._videoSplitDocElement?.remove();
+        this._videoSplitDocElement = null;
         return r;
     };
 };

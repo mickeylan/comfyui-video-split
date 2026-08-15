@@ -16,10 +16,8 @@
 8. [滤镜/调色节点](#8-滤镜调色节点)
 9. [转场效果节点](#9-转场效果节点)
 10. [特效节点](#10-特效节点)
-11. [AI 辅助节点](#11-ai-辅助节点)
-12. [批量渲染节点](#12-批量渲染节点)
-13. [工作流示例](#13-工作流示例)
-14. [常见问题](#14-常见问题)
+11. [工作流示例](#11-工作流示例)
+12. [常见问题](#12-常见问题)
 
 ---
 
@@ -40,12 +38,6 @@ pip install av          # 音频处理
 pip install Pillow      # 文字渲染
 ```
 
-**可选依赖：**
-```bash
-pip install edge-tts        # 自动配音
-pip install openai-whisper  # 自动字幕
-```
-
 ---
 
 ## 2. 节点总览
@@ -60,10 +52,8 @@ pip install openai-whisper  # 自动字幕
 | 滤镜/调色 | 4 | 亮度、对比度、预设滤镜 |
 | 转场效果 | 4 | 滑动、缩放、擦除、溶解 |
 | 特效 | 4 | 抠像、背景替换 |
-| AI 辅助 | 4 | 自动字幕、自动配音 |
-| 批量渲染 | 5 | 队列管理、批量处理 |
 
-**总计：55 个节点**
+**总计：46 个节点**
 
 ---
 
@@ -1006,185 +996,9 @@ pip install openai-whisper  # 自动字幕
 
 ---
 
-## 11. AI 辅助节点
+## 11. 工作流示例
 
-### 11.1 Auto Subtitle (Whisper)
-
-**功能：** 自动字幕（使用 Whisper 模型）。
-
-**输入：**
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| audio | AUDIO | - | 音频数据 |
-| language | 选择 | auto | 语言选择：auto/zh/en/ja/ko |
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| srt_content | STRING | SRT字幕内容 |
-| segments_json | STRING | 分段信息（JSON格式） |
-
-**依赖：** `pip install openai-whisper`
-
-**使用场景：** 配音后自动生成字幕。
-
----
-
-### 11.2 Auto Subtitle From File
-
-**功能：** 从音频文件生成字幕。
-
-**输入：**
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| audio_path | STRING | - | 音频文件路径 |
-| language | 选择 | auto | 语言选择 |
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| srt_content | STRING | SRT字幕内容 |
-
-**依赖：** `pip install openai-whisper`
-
----
-
-### 11.3 Auto TTS (Edge-TTS)
-
-**功能：** 自动配音（使用 Edge-TTS）。
-
-**输入：**
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| text | STRING | 你好，这是一个测试。 | 要转换的文字 |
-| voice | 选择 | zh-CN-XiaoxiaoNeural | 音色选择 |
-| rate | INT | 0 | 语速调整（-50慢，50快） |
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| audio | AUDIO | 生成的音频 |
-| audio_path | STRING | 音频文件路径 |
-
-**可用音色：**
-- zh-CN-XiaoxiaoNeural (晓晓)
-- zh-CN-YunxiNeural (云希)
-- zh-CN-YunjianNeural (云健)
-- zh-CN-XiaoyiNeural (晓伊)
-- zh-CN-YunyangNeural (云扬)
-- zh-CN-langbcNeural (澜波)
-
-**依赖：** `pip install edge-tts`
-
----
-
-### 11.4 Auto TTS Simple
-
-**功能：** 简化版配音。
-
-**输入：**
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| text | STRING | - | 文字 |
-| voice | 选择 | zh-CN-XiaoxiaoNeural | 音色 |
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| audio_path | STRING | 音频文件路径 |
-
-**依赖：** `pip install edge-tts`
-
----
-
-## 12. 批量渲染节点
-
-### 12.1 Batch Render Queue
-
-**功能：** 批量渲染队列。
-
-**输入：**
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| workflow_paths | STRING | - | 工作流 JSON 文件路径，每行一个 |
-| output_dir | STRING | ./output/batch | 输出目录 |
-| clear_previous | BOOLEAN | True | 是否清空之前的队列 |
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| status | STRING | 状态信息 |
-| queue_count | INT | 队列中的任务数 |
-
----
-
-### 12.2 Batch Render Status
-
-**功能：** 批量渲染状态。
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| current | INT | 当前任务索引 |
-| total | INT | 总任务数 |
-| status_json | STRING | 状态信息（JSON格式） |
-
----
-
-### 12.3 Batch Render Execute
-
-**功能：** 批量渲染执行。
-
-**输入：**
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| execute | BOOLEAN | False | 设为 True 开始执行 |
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| instructions | STRING | 执行指令 |
-
----
-
-### 12.4 Batch Workflow From Images
-
-**功能：** 从图像批次创建工作流。
-
-**输入：**
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| images | IMAGE | - | 图像批次 |
-| batch_name | STRING | batch | 批次名称 |
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| batch_info | BATCH_INFO | 批次信息 |
-
----
-
-### 12.5 Batch Process Images
-
-**功能：** 批量处理图像。
-
-**输入：**
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| images | IMAGE | - | 图像批次 |
-| process_all | BOOLEAN | True | True: 处理整个批次; False: 仅处理第一张 |
-
-**输出：**
-| 输出 | 类型 | 说明 |
-|------|------|------|
-| processed_images | IMAGE | 处理后的图像 |
-| processed_count | INT | 处理数量 |
-
----
-
-## 13. 工作流示例
-
-### 13.1 长视频分段放大
+### 11.1 长视频分段放大
 
 ```
 VHS Load Video
@@ -1204,7 +1018,7 @@ forLoopEnd
 VHS Video Combine
 ```
 
-### 13.2 漫剧制作流程
+### 11.2 漫剧制作流程
 
 ```
 1. 素材准备
@@ -1226,18 +1040,9 @@ VHS Video Combine
    Audio Merge → VHS Video Combine
 ```
 
-### 13.3 批量渲染
-
-```
-1. 准备多个工作流 JSON 文件
-2. Batch Render Queue (添加队列)
-3. Batch Render Status (查看状态)
-4. Batch Render Execute (执行)
-```
-
 ---
 
-## 14. 常见问题
+## 12. 常见问题
 
 ### Q1: 中文文字显示乱码？
 
@@ -1253,19 +1058,11 @@ font_path = "C:/Windows/Fonts/msyh.ttc"
 pip install av
 ```
 
-### Q3: 自动字幕/配音不工作？
-
-**A:** 安装依赖：
-```bash
-pip install openai-whisper  # 自动字幕
-pip install edge-tts        # 自动配音
-```
-
-### Q4: Image Collect 只保存最后一帧？
+### Q3: Image Collect 只保存最后一帧？
 
 **A:** 确保连接 `forLoopStart.value1` 到 `Image Collect.images`，不是 `initial_value1`！
 
-### Q5: 如何查看节点帮助？
+### Q4: 如何查看节点帮助？
 
 **A:** 每个节点右上角有 `?` 按钮，点击显示中英文帮助。
 
@@ -1285,8 +1082,6 @@ pip install edge-tts        # 自动配音
 | **滤镜** | ColorAdjust, ColorTemperature, ColorGradePreset, Vignette |
 | **转场** | TransitionSlide, TransitionZoom, TransitionWipe, TransitionDissolve |
 | **特效** | BackgroundRemove, BackgroundReplace, ColorKey, SimpleBackgroundRemove |
-| **AI** | AutoSubtitle, AutoSubtitleFromFile, AutoTTS, AutoTTSSimple |
-| **批量** | BatchRenderQueue, BatchRenderStatus, BatchRenderExecute, BatchWorkflowFromImages, BatchProcessImages |
 
 ---
 

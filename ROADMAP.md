@@ -72,27 +72,12 @@
 - Color Key（色键抠像）
 - Simple Background Remove
 
-#### AI 辅助节点 (4个) ✅
-- Auto Subtitle（Whisper 语音识别）
-- Auto Subtitle From File
-- Auto TTS（Edge-TTS 文字转语音）
-- Auto TTS Simple
-
-#### 批量渲染节点 (5个) ✅
-- Batch Render Queue
-- Batch Render Status
-- Batch Render Execute
-- Batch Workflow From Images
-- Batch Process Images
-
 ---
 
 ## 版本历史
 
 | 版本 | 内容 | 节点数 |
 |------|------|--------|
-| v0.7.0 | 批量渲染节点 | 55 |
-| v0.6.0 | AI 辅助节点（自动字幕、配音） | 50 |
 | v0.5.0 | 音频增强、特效节点（抠像、背景替换） | 46 |
 | v0.4.0 | 音频处理、文字字幕、滤镜调色、转场效果 | 42 |
 | v0.3.0 | 剪映功能节点（倒放、变速、拼接等） | 20 |
@@ -117,11 +102,7 @@
 | 字幕/文字 | ✅ | ✅ | ✅ 完成 |
 | 中文字体支持 | ✅ | ✅ | ✅ 完成 |
 | 抠像/背景替换 | ✅ | ✅ | ✅ 完成 |
-| 自动字幕 | ✅ | ✅ | ✅ 完成 |
-| 自动配音 | ✅ | ✅ | ✅ 完成 |
-| 批量渲染 | ✅ | ✅ | ✅ 完成 |
-
-**功能对齐度：100%**
+**功能对齐以已注册并实际执行的节点为准。**
 
 ---
 
@@ -162,8 +143,6 @@ comfyui-video-split/
 ├── filter_nodes.py          # 滤镜/调色节点
 ├── transition_nodes.py      # 转场效果节点
 ├── effect_nodes.py          # 特效节点（抠像/背景）
-├── ai_nodes.py              # AI 辅助节点（字幕/配音）
-├── batch_nodes.py           # 批量渲染节点
 ├── requirements.txt         # 依赖
 ├── docs/
 │   └── USER_GUIDE.md        # 详细使用文档
@@ -178,11 +157,6 @@ comfyui-video-split/
 
 ```
 av>=10.0.0           # PyAV - 音频处理
-Pillow>=9.0.0        # PIL - 文字渲染
-numpy>=1.20.0        # 数值计算
-torch>=2.0.0         # 张量处理
-edge-tts>=6.1.0      # 自动配音（可选）
-openai-whisper       # 自动字幕（可选）
 ```
 
 ---
