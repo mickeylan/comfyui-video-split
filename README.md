@@ -56,6 +56,7 @@
 | **Audio Fade** | 音频淡入淡出 |
 | **Audio Info** | 获取音频信息 |
 | **Audio Mix** | 多音轨混合（BGM+配音+音效） |
+| **Audio Concat** | 多段音频按时间顺序拼接 |
 | **Audio Fit To Video** | 音频时长匹配视频 |
 | **Audio Loop** | 音频循环 |
 | **Audio Cut** | 音频切割 |

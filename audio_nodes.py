@@ -20,10 +20,40 @@ def _audio(waveform, sample_rate):
     return {"waveform": waveform, "sample_rate": int(sample_rate)}
 
 
+def _audio_field(audio, name):
+    """Read a field from dict-like and lazy ComfyUI AUDIO payloads."""
+    getter = getattr(audio, "get", None)
+    if getter is not None:
+        value = getter(name)
+        if value is not None:
+            return value
+    try:
+        return audio[name]
+    except (KeyError, TypeError, AttributeError):
+        return getattr(audio, name, None)
+
+
 def _parts(audio):
-    if not isinstance(audio, dict) or "waveform" not in audio or "sample_rate" not in audio:
-        raise TypeError("AUDIO must contain waveform and sample_rate")
-    return audio["waveform"], int(audio["sample_rate"])
+    """读取 ComfyUI AUDIO，兼容 VHS 的 LazyAudioMap。"""
+    if not isinstance(audio, dict) and not hasattr(audio, "__getitem__"):
+        raise TypeError(
+            f"AUDIO must be dict-like, got {type(audio).__name__}. "
+            "Connect an AUDIO output such as VHS LoadVideo audio."
+        )
+
+    # VHS may defer decoding and pass LazyAudioMap rather than a dict.
+    waveform = _audio_field(audio, "waveform")
+    if waveform is None:
+        waveform = _audio_field(audio, "samples")
+    sample_rate = _audio_field(audio, "sample_rate")
+    if sample_rate is None:
+        sample_rate = _audio_field(audio, "rate")
+    if waveform is None or sample_rate is None:
+        raise TypeError(
+            "Unsupported AUDIO payload. Expected waveform/samples and "
+            f"sample_rate/rate; received {type(audio).__name__}"
+        )
+    return waveform, int(sample_rate)
 
 
 def _decode_audio(path):
@@ -265,6 +295,54 @@ class AudioLoop:
         return (_audio(result, sample_rate),)
 
 
+class AudioConcat:
+    """按时间顺序拼接多段音频。"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"audio1": ("AUDIO",)}, "optional": {
+            "audio2": ("AUDIO",),
+            "audio3": ("AUDIO",),
+            "audio4": ("AUDIO",),
+        }}
+
+    RETURN_TYPES = ("AUDIO",)
+    RETURN_NAMES = ("audio",)
+    FUNCTION = "execute"
+    CATEGORY = "video/audio"
+
+    def execute(self, audio1, audio2=None, audio3=None, audio4=None):
+        tracks = [audio1] + [audio for audio in (audio2, audio3, audio4) if audio is not None]
+        reference, sample_rate = _parts(tracks[0])
+        if reference.ndim != 3 or reference.shape[0] != 1:
+            raise ValueError("AudioConcat supports one audio batch at a time")
+
+        target_channels = reference.shape[1]
+        waveforms = []
+        for audio in tracks:
+            waveform, track_rate = _parts(audio)
+            if waveform.ndim != 3 or waveform.shape[0] != 1:
+                raise ValueError("AudioConcat supports one audio batch at a time")
+            waveform = waveform.to(device=reference.device, dtype=reference.dtype)
+            if track_rate != sample_rate:
+                new_length = round(waveform.shape[-1] * sample_rate / track_rate)
+                waveform = F.interpolate(
+                    waveform, size=new_length, mode="linear", align_corners=False
+                )
+            if waveform.shape[1] != target_channels:
+                if target_channels == 1:
+                    waveform = waveform.mean(dim=1, keepdim=True)
+                elif waveform.shape[1] == 1:
+                    waveform = waveform.expand(-1, target_channels, -1)
+                else:
+                    raise ValueError(
+                        f"AudioConcat cannot convert {waveform.shape[1]} channels to {target_channels}"
+                    )
+            waveforms.append(waveform)
+
+        return (_audio(torch.cat(waveforms, dim=-1), sample_rate),)
+
+
 class AudioCut:
     @classmethod
     def INPUT_TYPES(cls):
@@ -296,6 +374,7 @@ AUDIO_NODE_CLASS_MAPPINGS = {
     "AudioFade": AudioFade,
     "AudioInfo": AudioInfo,
     "AudioMix": AudioMix,
+    "VideoSplitAudioConcat": AudioConcat,
     "AudioFitToVideo": AudioFitToVideo,
     "AudioLoop": AudioLoop,
     "AudioCut": AudioCut,
@@ -309,6 +388,7 @@ AUDIO_NODE_DISPLAY_NAME_MAPPINGS = {
     "AudioFade": "Audio Fade",
     "AudioInfo": "Audio Info",
     "AudioMix": "Audio Mix",
+    "VideoSplitAudioConcat": "Audio Concat (Video Split)",
     "AudioFitToVideo": "Audio Fit To Video",
     "AudioLoop": "Audio Loop",
     "AudioCut": "Audio Cut",

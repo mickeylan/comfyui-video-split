@@ -243,8 +243,8 @@ class GetVideoFrame:
         return {
             "required": {
                 "images": ("IMAGE", {"tooltip": "帧张量"}),
-                "frame_index": ("INT", {"default": 0, "min": 0, "max": 1000000, "step": 1,
-                    "tooltip": "帧索引（从0开始）"}),
+                "frame_index": ("INT", {"default": 0, "min": -1000000, "max": 1000000, "step": 1,
+                    "tooltip": "帧索引（从0开始，支持负索引如-1表示最后一帧）"}),
             },
         }
 
@@ -567,10 +567,11 @@ class VideoSampleFrames:
         return {
             "required": {
                 "images": ("IMAGE", {"tooltip": "帧张量"}),
-                "sample_interval": ("INT", {"default": 2, "min": 1, "max": 100, "step": 1,
-                    "tooltip": "采样间隔（每隔N帧取1帧）"}),
-                "offset": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1,
-                    "tooltip": "起始偏移帧"}),
+                "sample_interval": ("INT", {"default": 2, "min": 1, "max": 1000000, "step": 1,
+                    "tooltip": "采样间隔（每隔N帧取1帧，必须为正数）"}),
+                # 用字符串输入避免 ComfyUI 前端对数字控件的隐式 0~100 限制。
+                "offset": ("STRING", {"default": "0",
+                    "tooltip": "起始偏移帧，支持负索引（-1表示最后一帧）和大于100的值"}),
             },
         }
 
@@ -579,14 +580,24 @@ class VideoSampleFrames:
     FUNCTION = "execute"
     CATEGORY = "video/editor"
 
-    def execute(self, images: torch.Tensor, sample_interval: int, offset: int) -> tuple:
+    def execute(self, images: torch.Tensor, sample_interval: int, offset) -> tuple:
         total_frames = images.shape[0]
+        try:
+            offset = int(str(offset).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Offset must be an integer, got {offset!r}.") from exc
+
+        # 将负偏移转换为从视频末尾开始的索引；例如 -1 表示最后一帧。
+        if offset < 0:
+            offset += total_frames
 
         # 计算采样索引
         indices = list(range(offset, total_frames, sample_interval))
 
         if not indices:
-            return (images[0:1].clone(), 1)
+            raise ValueError(
+                f"Offset {offset} is outside the video. Video has {total_frames} frames."
+            )
 
         result = images[indices].clone()
         return (result, result.shape[0])
@@ -895,7 +906,7 @@ NODE_CLASS_MAPPINGS.update({
     # 剪映功能节点
     "VideoReverse": VideoReverse,
     "VideoResample": VideoResample,
-    "VideoSampleFrames": VideoSampleFrames,
+    "VideoSplitSampleFrames": VideoSampleFrames,
     "VideoTimeRemap": VideoTimeRemap,
     "VideoConcat": VideoConcat,
     "VideoFade": VideoFade,
@@ -908,7 +919,7 @@ NODE_DISPLAY_NAME_MAPPINGS.update({
     # 剪映功能节点
     "VideoReverse": "Video Reverse",
     "VideoResample": "Video Resample",
-    "VideoSampleFrames": "Video Sample Frames",
+    "VideoSplitSampleFrames": "Video Sample Frames (Video Split)",
     "VideoTimeRemap": "Video Time Remap",
     "VideoConcat": "Video Concat",
     "VideoFade": "Video Fade",

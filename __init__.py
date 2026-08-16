@@ -17,4 +17,9 @@ NODE_DISPLAY_NAME_MAPPINGS.update(FILTER_NODE_DISPLAY_NAME_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(TEXT_NODE_DISPLAY_NAME_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(TRANSITION_NODE_DISPLAY_NAME_MAPPINGS)
 
+# Use a package-unique ID so a node with the same generic name from another
+# custom-node package cannot overwrite this node in ComfyUI's global registry.
+NODE_CLASS_MAPPINGS["VideoSplitAudioConcat"] = AUDIO_NODE_CLASS_MAPPINGS["VideoSplitAudioConcat"]
+NODE_DISPLAY_NAME_MAPPINGS["VideoSplitAudioConcat"] = "Audio Concat (Video Split)"
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
