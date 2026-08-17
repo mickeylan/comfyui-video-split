@@ -366,6 +366,349 @@ class AudioCut:
         return _audio(result, sample_rate), (end - start) / sample_rate
 
 
+class AudioCompose:
+    """
+    音频合成定位节点 - 严格时间轴对齐版。
+    
+    采用帧数作为统一时间基准，确保音画精确同步：
+    - 输入使用浮点秒，但内部转换为精确的帧数/采样数
+    - 视频帧率作为时间轴转换的桥梁
+    - 所有时间点都对齐到采样网格
+    
+    使用场景：
+    - 视频配音：不同角色的台词在不同时间点播放
+    - BGM+配音混合：背景音乐贯穿全程，配音在特定时间点插入
+    - 音效叠加：特定时间点添加音效
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "total_frames": ("INT", {"default": 1440, "min": 1, "max": 864000,
+                    "tooltip": "视频总帧数，用于精确时间计算"}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0,
+                    "tooltip": "视频帧率，作为时间轴转换的基准"}),
+                "sample_rate": ("INT", {"default": 44100, "min": 8000, "max": 192000}),
+            },
+            "optional": {
+                # 音频段1
+                "audio1": ("AUDIO", {"tooltip": "第一段音频"}),
+                "start_frame1": ("INT", {"default": 0, "min": 0, "max": 864000,
+                    "tooltip": "第一段音频的起始帧（精确对齐视频）"}),
+                # 音频段2
+                "audio2": ("AUDIO",),
+                "start_frame2": ("INT", {"default": 0, "min": 0, "max": 864000}),
+                # 音频段3
+                "audio3": ("AUDIO",),
+                "start_frame3": ("INT", {"default": 0, "min": 0, "max": 864000}),
+                # 音频段4
+                "audio4": ("AUDIO",),
+                "start_frame4": ("INT", {"default": 0, "min": 0, "max": 864000}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO", "FLOAT", "INT")
+    RETURN_NAMES = ("audio", "duration_seconds", "total_samples")
+    FUNCTION = "execute"
+    CATEGORY = "video/audio"
+    DESCRIPTION = "音频定位合成 - 严格帧级对齐"
+
+    @staticmethod
+    def _frame_to_sample(frame: int, fps: float, sample_rate: int) -> int:
+        """帧数 → 采样数（精确转换）"""
+        return int(round(frame * sample_rate / fps))
+    
+    @staticmethod
+    def _sample_to_frame(sample: int, fps: float, sample_rate: int) -> int:
+        """采样数 → 帧数（精确转换）"""
+        return int(round(sample * fps / sample_rate))
+    
+    @staticmethod
+    def _time_to_frame(time_seconds: float, fps: float) -> int:
+        """秒 → 帧数（精确转换）"""
+        return int(round(time_seconds * fps))
+    
+    @staticmethod
+    def _frame_to_time(frame: int, fps: float) -> float:
+        """帧数 → 秒（精确转换）"""
+        return frame / fps
+
+    def execute(self, total_frames, fps, sample_rate, audio1=None, start_frame1=0,
+                audio2=None, start_frame2=0, audio3=None, start_frame3=0,
+                audio4=None, start_frame4=0):
+        
+        # 收集所有音频段和对应的起始帧
+        audio_segments = []
+        for audio, start_frame in [
+            (audio1, start_frame1),
+            (audio2, start_frame2),
+            (audio3, start_frame3),
+            (audio4, start_frame4),
+        ]:
+            if audio is not None:
+                audio_segments.append((audio, start_frame))
+        
+        if not audio_segments:
+            # 没有音频段，返回静音
+            total_samples = self._frame_to_sample(total_frames, fps, sample_rate)
+            waveform = torch.zeros(1, 1, total_samples, dtype=torch.float32)
+            return (_audio(waveform, sample_rate), total_frames / fps, total_samples)
+        
+        # 获取第一个音频的设备/dtype作为参考
+        first_audio, _ = audio_segments[0]
+        ref_waveform, ref_rate = _parts(first_audio)
+        device = ref_waveform.device
+        dtype = ref_waveform.dtype
+        
+        # 计算总采样数（精确）
+        total_samples = self._frame_to_sample(total_frames, fps, sample_rate)
+        
+        # 创建空白轨道（静音）
+        result = torch.zeros(1, 1, total_samples, device=device, dtype=dtype)
+        
+        # 放置每段音频到指定位置（严格帧级对齐）
+        for audio, start_frame in audio_segments:
+            waveform, audio_rate = _parts(audio)
+            
+            # 统一转为单声道
+            if waveform.shape[1] > 1:
+                waveform = waveform.mean(dim=1, keepdim=True)
+            elif waveform.shape[1] == 0:
+                continue
+            
+            # 如果采样率不同，进行重采样（保持精确长度）
+            if audio_rate != sample_rate:
+                new_length = round(waveform.shape[-1] * sample_rate / audio_rate)
+                waveform = F.interpolate(
+                    waveform, size=new_length, mode="linear", align_corners=False
+                )
+            
+            # 精确计算起始位置（帧 → 采样）
+            start_sample = self._frame_to_sample(start_frame, fps, sample_rate)
+            end_sample = start_sample + waveform.shape[-1]
+            
+            # 裁剪到总长度范围内
+            actual_start = max(0, start_sample)
+            actual_end = min(total_samples, end_sample)
+            
+            # 对应的音频片段范围
+            audio_start = actual_start - start_sample
+            audio_end = audio_start + (actual_end - actual_start)
+            
+            if audio_end > audio_start:
+                # 混合到结果中（允许叠加）
+                result[..., actual_start:actual_end] += waveform[..., audio_start:audio_end].to(device=device, dtype=dtype)
+        
+        # 限制振幅
+        result = result.clamp(-1, 1)
+        
+        # 返回音频、精确时长（秒）、总采样数
+        duration_seconds = total_frames / fps  # 精确计算
+        return (_audio(result, sample_rate), duration_seconds, total_samples)
+
+
+class AudioComposeByTime:
+    """
+    音频合成定位节点 - 浮点秒输入版（带精度警告）。
+    
+    内部自动处理精度问题，但仍推荐使用 AudioCompose 的帧级版本。
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "total_duration": ("FLOAT", {"default": 60.0, "min": 0.1, "max": 36000.0, "step": 0.001,
+                    "tooltip": "总音频时长（秒），建议使用整数或精确分数"}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0,
+                    "tooltip": "视频帧率，用于时间基准转换"}),
+                "sample_rate": ("INT", {"default": 44100, "min": 8000, "max": 192000}),
+            },
+            "optional": {
+                "audio1": ("AUDIO",),
+                "start_time1": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 36000.0, "step": 0.001}),
+                "audio2": ("AUDIO",),
+                "start_time2": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 36000.0, "step": 0.001}),
+                "audio3": ("AUDIO",),
+                "start_time3": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 36000.0, "step": 0.001}),
+                "audio4": ("AUDIO",),
+                "start_time4": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 36000.0, "step": 0.001}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO", "FLOAT", "INT")
+    RETURN_NAMES = ("audio", "duration_seconds", "total_samples")
+    FUNCTION = "execute"
+    CATEGORY = "video/audio"
+    DESCRIPTION = "音频定位合成 - 秒级输入（精度较低）"
+
+    def execute(self, total_duration, fps, sample_rate, audio1=None, start_time1=0.0,
+                audio2=None, start_time2=0.0, audio3=None, start_time3=0.0,
+                audio4=None, start_time4=0.0):
+        
+        # 精确计算总帧数（避免浮点累积误差）
+        total_frames = round(total_duration * fps)
+        total_samples = round(total_frames * sample_rate / fps)
+        
+        audio_segments = []
+        for audio, start_time in [
+            (audio1, start_time1),
+            (audio2, start_time2),
+            (audio3, start_time3),
+            (audio4, start_time4),
+        ]:
+            if audio is not None:
+                audio_segments.append((audio, start_time))
+        
+        if not audio_segments:
+            waveform = torch.zeros(1, 1, total_samples, dtype=torch.float32)
+            return (_audio(waveform, sample_rate), total_frames / fps, total_samples)
+        
+        first_audio, _ = audio_segments[0]
+        ref_waveform, ref_rate = _parts(first_audio)
+        device = ref_waveform.device
+        dtype = ref_waveform.dtype
+        
+        result = torch.zeros(1, 1, total_samples, device=device, dtype=dtype)
+        
+        for audio, start_time in audio_segments:
+            waveform, audio_rate = _parts(audio)
+            
+            if waveform.shape[1] > 1:
+                waveform = waveform.mean(dim=1, keepdim=True)
+            elif waveform.shape[1] == 0:
+                continue
+            
+            if audio_rate != sample_rate:
+                new_length = round(waveform.shape[-1] * sample_rate / audio_rate)
+                waveform = F.interpolate(waveform, size=new_length, mode="linear", align_corners=False)
+            
+            # 精确转换：秒 → 帧 → 采样
+            start_frame = round(start_time * fps)
+            start_sample = round(start_frame * sample_rate / fps)
+            end_sample = start_sample + waveform.shape[-1]
+            
+            actual_start = max(0, start_sample)
+            actual_end = min(total_samples, end_sample)
+            
+            audio_start = actual_start - start_sample
+            audio_end = audio_start + (actual_end - actual_start)
+            
+            if audio_end > audio_start:
+                result[..., actual_start:actual_end] += waveform[..., audio_start:audio_end].to(device=device, dtype=dtype)
+        
+        result = result.clamp(-1, 1)
+        duration_seconds = total_frames / fps
+        
+        return (_audio(result, sample_rate), duration_seconds, total_samples)
+
+
+class AudioComposeAdvanced:
+    """
+    高级音频合成节点 - 支持更多音频段和音量控制。
+    
+    使用场景：
+    - 复杂的多轨音频合成
+    - 需要精确控制每段音频的音量
+    - 循环背景音乐 + 多次配音
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "total_duration": ("FLOAT", {"default": 60.0, "min": 0.1, "max": 36000.0, "step": 0.1}),
+                "sample_rate": ("INT", {"default": 44100, "min": 8000, "max": 192000}),
+            },
+            "optional": {
+                "audio_list": ("AUDIO", {"tooltip": "音频列表（多个音频）"}),
+                "start_times": ("STRING", {"default": "0,10,20,30", 
+                    "tooltip": "每段音频的起始时间，用逗号分隔。例如: 0,10,20,30"}),
+                "volumes": ("STRING", {"default": "1.0,0.8,1.0,0.6",
+                    "tooltip": "每段音频的音量，用逗号分隔。例如: 1.0,0.8,1.0,0.6"}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO",)
+    RETURN_NAMES = ("audio",)
+    FUNCTION = "execute"
+    CATEGORY = "video/audio"
+    DESCRIPTION = "高级音频合成 - 支持多段音频定位和音量控制"
+
+    def execute(self, total_duration, sample_rate, audio_list=None, 
+                start_times="0,10,20,30", volumes="1.0,0.8,1.0,0.6"):
+        
+        # 解析参数
+        try:
+            start_time_list = [float(t.strip()) for t in start_times.split(",") if t.strip()]
+        except ValueError:
+            raise ValueError("start_times 必须是逗号分隔的数字列表，例如: 0,10,20,30")
+        
+        try:
+            volume_list = [float(v.strip()) for v in volumes.split(",") if v.strip()]
+        except ValueError:
+            raise ValueError("volumes 必须是逗号分隔的数字列表，例如: 1.0,0.8,1.0,0.6")
+        
+        # 如果有音频列表
+        if audio_list is not None:
+            if isinstance(audio_list, dict):
+                # 单个音频
+                audio_segments = [(audio_list, start_time_list[0] if start_time_list else 0.0, 
+                                  volume_list[0] if volume_list else 1.0)]
+            else:
+                # 音频列表
+                audio_segments = []
+                for i, audio in enumerate(audio_list):
+                    if audio is not None:
+                        start_time = start_time_list[i] if i < len(start_time_list) else 0.0
+                        volume = volume_list[i] if i < len(volume_list) else 1.0
+                        audio_segments.append((audio, start_time, volume))
+        else:
+            audio_segments = []
+        
+        if not audio_segments:
+            total_samples = round(total_duration * sample_rate)
+            waveform = torch.zeros(1, 1, total_samples, dtype=torch.float32)
+            return (_audio(waveform, sample_rate),)
+        
+        # 创建结果轨道
+        device = torch.device("cpu")
+        dtype = torch.float32
+        total_samples = round(total_duration * sample_rate)
+        result = torch.zeros(1, 1, total_samples, dtype=dtype)
+        
+        for audio, start_time, volume in audio_segments:
+            waveform, audio_rate = _parts(audio)
+            
+            if waveform.shape[1] > 1:
+                waveform = waveform.mean(dim=1, keepdim=True)
+            elif waveform.shape[1] == 0:
+                continue
+            
+            if audio_rate != sample_rate:
+                new_length = round(waveform.shape[-1] * sample_rate / audio_rate)
+                waveform = F.interpolate(waveform, size=new_length, mode="linear", align_corners=False)
+            
+            # 应用音量
+            waveform = waveform * volume
+            
+            start_sample = round(start_time * sample_rate)
+            end_sample = start_sample + waveform.shape[-1]
+            
+            actual_start = max(0, start_sample)
+            actual_end = min(total_samples, end_sample)
+            
+            audio_start = actual_start - start_sample
+            audio_end = audio_start + (actual_end - actual_start)
+            
+            if audio_end > audio_start:
+                result[..., actual_start:actual_end] += waveform[..., audio_start:audio_end]
+        
+        result = result.clamp(-1, 1)
+        return (_audio(result, sample_rate),)
+
+
 AUDIO_NODE_CLASS_MAPPINGS = {
     "AudioExtract": AudioExtract,
     "AudioFromVideo": AudioFromVideo,
@@ -378,6 +721,9 @@ AUDIO_NODE_CLASS_MAPPINGS = {
     "AudioFitToVideo": AudioFitToVideo,
     "AudioLoop": AudioLoop,
     "AudioCut": AudioCut,
+    "AudioCompose": AudioCompose,
+    "AudioComposeByTime": AudioComposeByTime,
+    "AudioComposeAdvanced": AudioComposeAdvanced,
 }
 
 AUDIO_NODE_DISPLAY_NAME_MAPPINGS = {
@@ -392,4 +738,7 @@ AUDIO_NODE_DISPLAY_NAME_MAPPINGS = {
     "AudioFitToVideo": "Audio Fit To Video",
     "AudioLoop": "Audio Loop",
     "AudioCut": "Audio Cut",
+    "AudioCompose": "Audio Compose (Frame-aligned)",
+    "AudioComposeByTime": "Audio Compose (Time-based)",
+    "AudioComposeAdvanced": "Audio Compose (Advanced)",
 }

@@ -1,6 +1,6 @@
 # ComfyUI Video Split 使用文档
 
-> 版本：v0.7.0 | 最后更新：2024年
+> 版本：v0.8.0 | 最后更新：2026年8月
 
 ---
 
@@ -47,13 +47,13 @@ pip install Pillow      # 文字渲染
 | 核心分段 | 5 | 视频分割、合并、循环收集 |
 | 基础编辑 | 6 | 帧提取、裁剪、缩放 |
 | 剪映功能 | 9 | 变速、倒放、拼接、淡入淡出 |
-| 音频处理 | 10 | 提取、合并、音量、多轨混合 |
+| 音频处理 | 13 | 提取、合并、音量、多轨混合、定位合成、时间轴编辑 |
 | 文字/字幕 | 4 | 文字叠加、动画、SRT导入 |
 | 滤镜/调色 | 4 | 亮度、对比度、预设滤镜 |
 | 转场效果 | 4 | 滑动、缩放、擦除、溶解 |
 | 特效 | 4 | 抠像、背景替换 |
 
-**总计：46 个节点**
+**总计：49 个节点**
 
 ---
 
@@ -663,6 +663,197 @@ pip install Pillow      # 文字渲染
 
 ---
 
+### 6.11 Audio Compose（帧级对齐）
+
+**功能：** 将多段音频分别放置在视频的指定位置，实现精确的时间轴对齐。
+
+**特性：**
+- 采用帧数作为统一时间基准，确保音画精确同步
+- 每段音频可在任意时间点开始播放
+- 多段音频可叠加在同一时间段
+- 自动处理不同采样率的音频
+
+**输入：**
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| total_frames | INT | 1440 | 视频总帧数 |
+| fps | FLOAT | 24.0 | 视频帧率，用于时间轴转换 |
+| sample_rate | INT | 44100 | 采样率 |
+| audio1 | AUDIO (可选) | - | 第一段音频 |
+| start_frame1 | INT | 0 | 第一段音频的起始帧 |
+| audio2 | AUDIO (可选) | - | 第二段音频 |
+| start_frame2 | INT | 0 | 第二段音频的起始帧 |
+| audio3 | AUDIO (可选) | - | 第三段音频 |
+| start_frame3 | INT | 0 | 第三段音频的起始帧 |
+| audio4 | AUDIO (可选) | - | 第四段音频 |
+| start_frame4 | INT | 0 | 第四段音频的起始帧 |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| audio | AUDIO | 合成后的音频 |
+| duration_seconds | FLOAT | 精确时长（秒） |
+| total_samples | INT | 总采样数 |
+
+**使用场景：**
+- 视频配音：不同角色的台词在不同时间点播放
+- BGM + 配音混合：背景音乐在某段时间播放，配音在特定时间点插入
+- 音效叠加：特定时间点添加音效
+
+**时间转换公式：**
+```
+采样数 = round(帧数 × 采样率 / fps)
+帧数 = round(采样数 × fps / 采样率)
+```
+
+---
+
+### 6.12 Audio Compose (Advanced)
+
+**功能：** 高级音频合成，支持更多音频段和音量控制。
+
+**输入：**
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| total_duration | FLOAT | 60.0 | 总音频时长（秒） |
+| sample_rate | INT | 44100 | 采样率 |
+| audio_list | AUDIO (可选) | - | 音频列表 |
+| start_times | STRING | "0,10,20,30" | 起始时间列表（逗号分隔） |
+| volumes | STRING | "1.0,0.8,1.0,0.6" | 音量列表（逗号分隔） |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| audio | AUDIO | 合成后的音频 |
+
+**示例配置：**
+```
+start_times: "0,10,25,40"    # 4段音频分别在 0秒、10秒、25秒、40秒开始
+volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
+```
+
+---
+
+### 6.13 Audio Timeline Editor 🎬
+
+**功能：** 可视化时间轴编辑器，通过拖拽操作校准音频位置。
+
+**特性：**
+- 🎯 拖拽音频块调整位置
+- ↔️ 拖拽边缘调整时长
+- 📐 精确到帧级对齐
+- 🔍 支持缩放和平移
+- 📋 导入导出配置
+
+**界面说明：**
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  🎵 Audio Timeline Editor                     [+ 添加轨道] [导出] [导入] │
+├──────────────────────────────────────────────────────────────────────┤
+│  0:00    0:05    0:10    0:15    0:20    0:25    0:30                │
+│  ▼────────────────────────────────────────────────────────────────   │
+│  音频轨道 1   │████████ BGM ████████│                                  │
+│  音频轨道 2   │      │████ 配音1 ████│                                  │
+│  音频轨道 3   │           │███ 音效 ██│                                  │
+│              ▼                                                        │
+│              播放头                                                    │
+├──────────────────────────────────────────────────────────────────────┤
+│  FPS: 24  总帧数: 720  时长: 30.00s  播放头: 145 (0:06.04)            │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**交互操作：**
+
+| 操作 | 功能 |
+|------|------|
+| 拖拽音频块 | 移动音频到指定位置 |
+| 拖拽边缘 | 调整音频时长 |
+| 双击空白处 | 添加新音频块 |
+| 滚轮 | 水平滚动时间轴 |
+| Ctrl + 滚轮 | 缩放时间轴 |
+| Delete / Backspace | 删除选中的音频块 |
+| ← / → 方向键 | 微调选中音频块位置（1帧） |
+| 导出按钮 | 复制配置 JSON 到剪贴板 |
+| 导入按钮 | 从剪贴板导入配置 |
+
+**输入：**
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| fps | FLOAT | 24.0 | 视频帧率 |
+| video_images | IMAGE (可选) | - | 视频帧（自动获取 fps 和帧数） |
+| timeline_config | STRING | - | 时间轴配置 JSON |
+| sample_rate | INT | 44100 | 采样率 |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| config | TIMELINE_CONFIG | 时间轴配置对象 |
+| config_json | STRING | JSON 格式的配置 |
+| total_frames | INT | 总帧数 |
+| duration_seconds | FLOAT | 时长（秒） |
+
+**工作流：**
+
+```
+┌─────────────────┐
+│  Load Video     │
+│  (VHS)          │
+└────────┬────────┘
+         │
+         ├──→ images ──────────────────────────────────────────────────┐
+         │                                                              │
+         └──→ audio ─┐                                                 ▼
+                    │                                              ┌────────────┐
+                    ▼                                              │ Video Info │
+              ┌────────────┐                                        │ (fps,frames)│
+              │ Audio      │                                        └─────┬──────┘
+              │ Timeline   │                                              │
+              │ Editor     │                                              │
+              │ (可视化)    │                                              │
+              └─────┬──────┘                                              │
+                    │ config_json                                         │
+                    ▼                                                     │
+              ┌─────────────────────────────────────────────┐             │
+              │ Audio Timeline Composer                     │             │
+              │                                             │             │
+              │  audio1: [背景音乐]    audio3: [配音2]       │             │
+              │  audio2: [配音1]      audio4: [音效]        │             │
+              │  timeline_config: ←来自时间轴编辑器         │             │
+              └─────────────────────┬───────────────────────┘             │
+                                    │ audio                               │
+                                    ▼                                     │
+                              ┌─────────────┐                             │
+                              │ Audio Merge │ ←───────────────────────────┘
+                              │ (合并到视频) │
+                              └─────────────┘
+                                    │
+                                    ▼
+                              最终视频输出
+```
+
+---
+
+### 6.14 Audio Timeline Composer
+
+**功能：** 根据时间轴配置，将多段音频合成到指定位置。
+
+**输入：**
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| total_frames | INT | 1440 | 视频总帧数 |
+| fps | FLOAT | 24.0 | 视频帧率 |
+| sample_rate | INT | 44100 | 采样率 |
+| timeline_config | TIMELINE_CONFIG (可选) | - | 时间轴配置 |
+| audio1-8 | AUDIO (可选) | - | 最多8段音频 |
+
+**输出：**
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| audio | AUDIO | 合成后的音频 |
+
+---
+
 ## 7. 文字/字幕节点
 
 ### 7.1 Text Overlay
@@ -1040,6 +1231,43 @@ VHS Video Combine
    Audio Merge → VHS Video Combine
 ```
 
+### 11.3 音频时间轴校准（可视化）
+
+使用可视化编辑器拖拽校准多段音频的位置：
+
+```
+1. 加载视频
+   VHS Load Video → Video Info (获取 fps, total_frames)
+                           ↓
+                    Video Images → Audio Timeline Editor (可视化)
+                                          ↓
+                                    拖拽调整音频位置
+                                          ↓
+                                    导出配置 JSON
+                                          ↓
+2. 加载音频文件
+   Load Audio (BGM) → audio1
+   Load Audio (配音1) → audio2
+   Load Audio (配音2) → audio3
+   Load Audio (音效) → audio4
+
+3. 合成音频
+   Audio Timeline Composer → 合成音频
+
+4. 合并视频
+   Audio Merge → 最终视频
+```
+
+**详细步骤：**
+
+1. 添加 `Audio Timeline Editor` 节点
+2. 连接视频获取 fps 和帧数
+3. 在编辑器中点击空白处添加音频块
+4. 拖拽音频块到期望位置
+5. 点击「导出」按钮复制配置
+6. 将音频文件连接到 `Audio Timeline Composer`
+7. 最后用 `Audio Merge` 合并视频
+
 ---
 
 ## 12. 常见问题
@@ -1066,6 +1294,29 @@ pip install av
 
 **A:** 每个节点右上角有 `?` 按钮，点击显示中英文帮助。
 
+### Q5: 如何精确对齐音频和视频？
+
+**A:** 使用 `Audio Timeline Editor` 可视化编辑器：
+1. 在编辑器中拖拽音频块到精确位置
+2. 点击「导出」复制配置 JSON
+3. 将配置传给后续节点
+
+或者使用 `Audio Compose` 节点，直接指定帧数：
+```
+start_frame = round(target_time_seconds * fps)
+```
+
+### Q6: 时间轴编辑器不显示？
+
+**A:** 确保：
+1. 重启 ComfyUI 加载新节点
+2. 浏览器刷新缓存（Ctrl+F5）
+3. 检查控制台是否有 JS 错误
+
+### Q7: 多段音频叠加时音量太大？
+
+**A:** 在 `Audio Timeline Editor` 中降低各音频块的音量，或在 `Audio Timeline Composer` 中调整整体音量。
+
 ---
 
 ## 附录
@@ -1077,7 +1328,7 @@ pip install av
 | **分段** | VideoSegmentInfo, GetVideoSegment, VideoSplitMultiple, MergeVideoSegments, ImageCollect |
 | **编辑** | GetVideoFrame, GetVideoFramesRange, VideoCrop, ImageToVideo, VideoScale, VideoInfo |
 | **剪映** | VideoReverse, VideoResample, VideoSampleFrames, VideoTimeRemap, VideoConcat, VideoFade, VideoOverlay, FrameInterpolate, FrameDeduplicate |
-| **音频** | AudioExtract, AudioFromVideo, AudioMerge, AudioVolume, AudioFade, AudioInfo, AudioMix, AudioFitToVideo, AudioLoop, AudioCut |
+| **音频** | AudioExtract, AudioFromVideo, AudioMerge, AudioVolume, AudioFade, AudioInfo, AudioMix, AudioFitToVideo, AudioLoop, AudioCut, AudioCompose, AudioComposeAdvanced, AudioTimelineEditor, AudioTimelineComposer |
 | **文字** | TextOverlay, TextAnimation, SubtitleImport, TextPositionPreset |
 | **滤镜** | ColorAdjust, ColorTemperature, ColorGradePreset, Vignette |
 | **转场** | TransitionSlide, TransitionZoom, TransitionWipe, TransitionDissolve |
@@ -1085,6 +1336,6 @@ pip install av
 
 ---
 
-**文档版本：** v1.0  
-**最后更新：** 2024年  
+**文档版本：** v2.0  
+**最后更新：** 2026年8月  
 **仓库地址：** https://github.com/mickeylan/comfyui-video-split

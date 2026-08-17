@@ -1,4 +1,4 @@
-const { app } = window.comfyAPI.app;
+const { app } = window.comfyAPI?.app || window.app || {};
 
 // 帮助文本
 const helpTexts = {
@@ -270,6 +270,24 @@ function getLang() {
     return locale.startsWith('zh') ? 'zh' : 'en';
 }
 
+// 加载时间轴编辑器脚本
+const loadAudioTimelineScript = () => {
+    return new Promise((resolve, reject) => {
+        if (window.AudioTimelineEditor) {
+            resolve();
+            return;
+        }
+        const script = document.createElement('script');
+        script.src = 'web/js/audio_timeline.js';
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+    });
+};
+
+// 时间轴编辑器实例管理
+const timelineEditors = new Map();
+
 app.registerExtension({
     name: "comfyui-video-split",
     
@@ -292,14 +310,106 @@ app.registerExtension({
                     addDocumentation(nodeData, nodeType);
                 }
             }
+            
+            // 为 AudioTimelineEditor 节点添加自定义 UI
+            if (nodeData.name === "AudioTimelineEditor") {
+                // 等待脚本加载
+                await loadAudioTimelineScript();
+                
+                // 添加自定义 widget
+                nodeData.input.required = nodeData.input.required || {};
+                nodeData.input.required.timeline_ui = {
+                    type: "CUSTOM",
+                    name: "timeline_ui",
+                };
+            }
         } catch (error) {
             console.error("Error in registering comfyui-video-split", error);
         }
     },
     
-    nodeCreated(node) {
+    async nodeCreated(node) {
         const description = nodeDescriptions.get(node.type) || nodeDescriptions.get(node.comfyClass);
         if (!description) return;
         node._videoSplitHelpDescription = description;
+        
+        // 为 AudioTimelineEditor 节点创建可视化编辑器
+        if (node.type === "AudioTimelineEditor") {
+            await loadAudioTimelineScript();
+            
+            // 等待节点完全创建
+            setTimeout(() => {
+                this.initTimelineEditor(node);
+            }, 100);
+        }
+    },
+    
+    initTimelineEditor(node) {
+        // 查找节点上的 widget 容器
+        const nodeElement = node.element || document.querySelector(`[data-id="${node.id}"]`);
+        if (!nodeElement) return;
+        
+        // 创建编辑器容器
+        const editorContainer = document.createElement('div');
+        editorContainer.className = 'audio-timeline-editor-container';
+        editorContainer.style.cssText = 'margin: 8px 0; border-radius: 6px; overflow: hidden;';
+        
+        // 插入到 fps widget 后面
+        const widgets = node.widgets || [];
+        const fpsWidget = widgets.find(w => w.name === 'fps');
+        if (fpsWidget && fpsWidget.element) {
+            fpsWidget.element.parentNode.insertBefore(editorContainer, fpsWidget.element.nextSibling);
+        } else {
+            // 备用：添加到节点内容区域
+            const content = nodeElement.querySelector('.content');
+            if (content) {
+                content.appendChild(editorContainer);
+            }
+        }
+        
+        // 解析当前配置
+        let config = { fps: 24, totalFrames: 1440, tracks: [] };
+        const configWidget = widgets.find(w => w.name === 'timeline_config');
+        if (configWidget && configWidget.value) {
+            try {
+                config = JSON.parse(configWidget.value);
+            } catch (e) {}
+        }
+        
+        // 获取 fps 和帧数
+        const fpsWidget2 = widgets.find(w => w.name === 'fps');
+        const fps = fpsWidget2 ? parseFloat(fpsWidget2.value) || 24 : 24;
+        
+        // 创建编辑器实例
+        const editor = new AudioTimelineEditor(editorContainer, {
+            fps: fps,
+            totalFrames: config.totalFrames || 1440,
+            onChange: (newConfig) => {
+                // 更新 config widget
+                if (configWidget) {
+                    configWidget.value = JSON.stringify(newConfig, null, 2);
+                    configWidget.callback?.();
+                }
+            }
+        });
+        
+        // 如果有已有配置，应用它
+        if (config.tracks && config.tracks.length > 0) {
+            editor.setConfig(config);
+        }
+        
+        // 保存实例引用
+        timelineEditors.set(node.id, editor);
+        
+        // 节点删除时清理
+        node.onRemoved = node.onRemoved || (() => {});
+        node.onRemoved = function() {
+            const ed = timelineEditors.get(node.id);
+            if (ed) {
+                ed.destroy();
+                timelineEditors.delete(node.id);
+            }
+            node.onRemoved();
+        };
     }
 });

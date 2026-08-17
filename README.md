@@ -57,6 +57,10 @@
 | **Audio Info** | 获取音频信息 |
 | **Audio Mix** | 多音轨混合（BGM+配音+音效） |
 | **Audio Concat** | 多段音频按时间顺序拼接 |
+| **Audio Compose** | 多段音频指定位置合成（帧级对齐） |
+| **Audio Compose (Advanced)** | 高级音频合成，支持多段定位+音量控制 |
+| **Audio Timeline Editor** | 🎬 可视化时间轴编辑器，拖拽校准音频位置 |
+| **Audio Timeline Composer** | 根据时间轴配置合成多段音频 |
 | **Audio Fit To Video** | 音频时长匹配视频 |
 | **Audio Loop** | 音频循环 |
 | **Audio Cut** | 音频切割 |
@@ -443,6 +447,8 @@ VHS Load Video ─────┤
 
 ## 版本
 
+- v0.8.0 - 新增可视化时间轴编辑器（Audio Timeline Editor），支持拖拽校准音频位置；新增帧级对齐的 AudioCompose 节点
+- v0.7.0 - 新增音频定位合成节点（AudioCompose），支持帧级对齐
 - v0.5.0 - 新增音频增强（多轨混合、时长匹配）、特效节点（抠像、背景替换）
 - v0.4.0 - 新增音频处理、文字字幕、滤镜调色、转场效果节点，打造完整剪映功能
 - v0.3.0 - 新增剪映功能节点：VideoReverse、VideoResample、VideoSampleFrames、VideoTimeRemap、VideoConcat、VideoFade、VideoOverlay、FrameInterpolate、FrameDeduplicate
