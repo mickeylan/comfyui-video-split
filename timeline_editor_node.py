@@ -165,7 +165,7 @@ class AudioTimelineComposer:
     音频时间轴合成器
     
     根据时间轴配置，将多段音频合成到指定位置。
-    支持精确帧级对齐。
+    支持精确帧级对齐和音量控制。
     """
 
     @classmethod
@@ -175,17 +175,27 @@ class AudioTimelineComposer:
                 "total_frames": ("INT", {"default": 1440, "min": 1, "max": 864000}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0}),
                 "sample_rate": ("INT", {"default": 44100, "min": 8000, "max": 192000}),
+                "master_volume": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1,
+                    "tooltip": "主音量，控制整体输出音量"}),
             },
             "optional": {
                 "timeline_config": ("TIMELINE_CONFIG",),
                 "audio1": ("AUDIO",),
+                "volume1": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
                 "audio2": ("AUDIO",),
+                "volume2": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
                 "audio3": ("AUDIO",),
+                "volume3": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
                 "audio4": ("AUDIO",),
+                "volume4": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
                 "audio5": ("AUDIO",),
+                "volume5": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
                 "audio6": ("AUDIO",),
+                "volume6": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
                 "audio7": ("AUDIO",),
+                "volume7": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
                 "audio8": ("AUDIO",),
+                "volume8": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
             }
         }
 
@@ -193,15 +203,31 @@ class AudioTimelineComposer:
     RETURN_NAMES = ("audio",)
     FUNCTION = "execute"
     CATEGORY = "video/audio"
-    DESCRIPTION = "根据时间轴配置合成多段音频"
+    DESCRIPTION = "根据时间轴配置合成多段音频（支持音量控制）"
 
-    def execute(self, total_frames, fps, sample_rate, timeline_config=None,
-                audio1=None, audio2=None, audio3=None, audio4=None,
-                audio5=None, audio6=None, audio7=None, audio8=None):
+    def execute(self, total_frames, fps, sample_rate, master_volume=1.0,
+                timeline_config=None,
+                audio1=None, volume1=1.0,
+                audio2=None, volume2=1.0,
+                audio3=None, volume3=1.0,
+                audio4=None, volume4=1.0,
+                audio5=None, volume5=1.0,
+                audio6=None, volume6=1.0,
+                audio7=None, volume7=1.0,
+                audio8=None, volume8=1.0):
         
-        # 收集所有音频
-        audio_list = [audio1, audio2, audio3, audio4, audio5, audio6, audio7, audio8]
-        audio_list = [a for a in audio_list if a is not None]
+        # 收集所有音频和音量
+        audio_data = [
+            (audio1, volume1),
+            (audio2, volume2),
+            (audio3, volume3),
+            (audio4, volume4),
+            (audio5, volume5),
+            (audio6, volume6),
+            (audio7, volume7),
+            (audio8, volume8),
+        ]
+        audio_list = [(a, v) for a, v in audio_data if a is not None]
 
         if not audio_list:
             # 返回静音
@@ -210,7 +236,7 @@ class AudioTimelineComposer:
             return (_audio(waveform, sample_rate),)
 
         # 获取参考设备
-        ref_waveform, ref_rate = _parts(audio_list[0])
+        ref_waveform, ref_rate = _parts(audio_list[0][0])
         device = ref_waveform.device
         dtype = ref_waveform.dtype
 
@@ -232,7 +258,7 @@ class AudioTimelineComposer:
             for track in config.tracks:
                 for block in track.get("blocks", []):
                     if audio_index < len(audio_list):
-                        audio = audio_list[audio_index]
+                        audio, input_volume = audio_list[audio_index]
                         waveform, audio_rate = _parts(audio)
 
                         # 转为单声道
@@ -262,9 +288,11 @@ class AudioTimelineComposer:
                         audio_end = audio_start + (actual_end - actual_start)
 
                         if audio_end > audio_start and audio_end <= waveform.shape[-1]:
-                            volume = block.get("volume", 1.0)
+                            # 音量 = config中的音量 × 输入音量 × 主音量
+                            block_volume = block.get("volume", 1.0)
+                            final_volume = block_volume * input_volume * master_volume
                             result[..., actual_start:actual_end] += (
-                                waveform[..., audio_start:audio_end] * volume
+                                waveform[..., audio_start:audio_end] * final_volume
                             ).to(device=device, dtype=dtype)
 
                         audio_index += 1
@@ -273,7 +301,7 @@ class AudioTimelineComposer:
             # 没有配置，所有音频从头到尾依次拼接
             import torch.nn.functional as F
             current_pos = 0
-            for audio in audio_list:
+            for audio, input_volume in audio_list:
                 waveform, audio_rate = _parts(audio)
 
                 if waveform.shape[1] > 1:
@@ -289,7 +317,10 @@ class AudioTimelineComposer:
                 copy_len = end_pos - current_pos
 
                 if copy_len > 0:
-                    result[..., current_pos:end_pos] = waveform[..., :copy_len].to(device=device, dtype=dtype)
+                    final_volume = input_volume * master_volume
+                    result[..., current_pos:end_pos] = (
+                        waveform[..., :copy_len] * final_volume
+                    ).to(device=device, dtype=dtype)
                     current_pos = end_pos
 
                 if current_pos >= total_samples:
