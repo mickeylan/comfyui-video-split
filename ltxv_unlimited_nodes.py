@@ -1,13 +1,13 @@
 """
-LTX Video Sampler Unlimited - 基于 MiniMax H3 Unlimited 架构的分块采样器
+LTX Video Sampler Unlimited - AV 联合分块采样器
+
+基于 MiniMax H3 Unlimited 架构，支持 LTX Video 的 AV 联合 latent 分块采样。
 
 核心原理:
-1. 将长视频 latent 分成多个时序块
-2. 使用重叠 latent 作为连续引导 (来自前一块的输出)
-3. 在重叠区域使用零噪声引导
-4. 移除重叠引导部分后拼接输出
-
-来自 ComfyUI-MiniMax-H3-Sampler-Unlimited 的架构设计。
+1. 处理 AV 联合 NestedTensor latent
+2. 分离 video 和 audio 分别处理
+3. 使用重叠 latent 作为连续引导
+4. 重新组合 video 和 audio
 """
 
 import copy
@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import torch
 
 import comfy
+import comfy.nested_tensor
 import comfy.patcher_extension
 import comfy_extras.nodes_custom_sampler
 
@@ -29,16 +30,10 @@ from .preview import begin_preview_execution, PREVIEW_WRAPPER_KEY
 
 # LTX Video 帧结构: 像素帧数 = 8 * n + 1
 # latent 步数 = n + 1
-# 例如: 257 (n=32) -> 33 步, 129 (n=16) -> 17 步, 17 (n=2) -> 3 步, 9 (n=1) -> 2 步
 
 
 def pixel_frames_to_latent_steps(pixel_frames: int) -> int:
-    """
-    将像素帧数转换为 latent 步数
-    
-    LTX 帧结构: 像素帧数 = 8 * n + 1, latent 步数 = n + 1
-    例如: 257 -> 33, 129 -> 17, 97 -> 13
-    """
+    """将像素帧数转换为 latent 步数"""
     if pixel_frames < 9:
         raise ValueError(f"LTX minimum is 9 pixel frames, got {pixel_frames}")
     if (pixel_frames - 1) % 8 != 0:
@@ -52,100 +47,109 @@ def latent_steps_to_pixel_frames(latent_steps: int) -> int:
 
 
 # ============================================================================
-# 分块规划 (来自 MiniMax H3 Unlimited)
+# 分块规划 (支持 AV 联合)
 # ============================================================================
 
 @dataclass
 class ChunkPlan:
     """单个分块的规划信息"""
     chunk_index: int
-    # Latent 级别的索引 (不是像素帧)
-    latent_start: int
-    latent_end: int
+    # Video latent 级别索引
+    video_start: int
+    video_end: int
+    # Audio latent 级别索引
+    audio_start: int
+    audio_end: int
     # 像素帧级别
-    pixel_start: int
-    pixel_end: int
+    frame_start: int
+    frame_end: int
     # 是否是第一个分块
     is_first: bool
-    # 重叠的 latent 步数 (用于引导)
-    overlap_latent_steps: int
+    # Video 重叠 latent 步数
+    overlap_video_steps: int
+    # Audio 上下文步数
+    context_audio_steps: int
 
 
-def plan_chunks(
-    total_pixel_frames: int,
-    chunk_frames: int,
-    overlap_frames: int = 8,
-) -> list[ChunkPlan]:
+def _chunk_plan(video_t, audio_t, chunk_frames, time_scale_factor=8):
     """
-    生成分块计划
+    生成分块计划 (来自 MiniMax H3 Unlimited)
     
     Args:
-        total_pixel_frames: 总像素帧数 (必须是 8n+1)
-        chunk_frames: 每块最大像素帧数 (必须是 8n+1)
-        overlap_frames: 重叠像素帧数 (用于连续引导，必须是 8 的倍数)
+        video_t: video latent 步数
+        audio_t: audio latent 步数
+        chunk_frames: 每块最大像素帧数
+        time_scale_factor: 8 (LTX 固定)
     
     Returns:
         分块计划列表
     """
-    # 验证帧数合法性
-    if (total_pixel_frames - 1) % 8 != 0:
-        raise ValueError(f"Total frames must be 8n+1, got {total_pixel_frames}")
-    if (chunk_frames - 1) % 8 != 0:
-        raise ValueError(f"Chunk frames must be 8n+1, got {chunk_frames}")
-    if chunk_frames < 9:
-        raise ValueError(f"Minimum chunk frames is 9, got {chunk_frames}")
-    if overlap_frames < 8 or overlap_frames % 8 != 0:
-        raise ValueError(f"Overlap frames must be 8n, got {overlap_frames}")
+    # 计算每块最大 video latent 步数
+    max_chunk_frames = chunk_frames - (chunk_frames - 1) % time_scale_factor
+    max_chunk_t = ((max_chunk_frames - 1) // time_scale_factor) * time_scale_factor + 1
     
-    # 转换为 latent 步数
-    total_latent_steps = pixel_frames_to_latent_steps(total_pixel_frames)
-    max_chunk_latent = pixel_frames_to_latent_steps(chunk_frames)
-    overlap_latent = pixel_frames_to_latent_steps(overlap_frames)
+    # 验证 video latent 格式
+    if video_t < 1 or (video_t - 1) % time_scale_factor != 0:
+        raise ValueError(f"LTX video latent must be on 8n+1 frame grid, got video_t={video_t}")
     
-    chunks = []
-    latent_pos = 0
-    chunk_index = 0
+    total_pixel_frames = latent_steps_to_pixel_frames(video_t)
     
-    while latent_pos < total_latent_steps:
-        if chunk_index == 0:
-            # 第一个分块: 尽可能多地采样
-            chunk_latent_end = min(latent_pos + max_chunk_latent, total_latent_steps)
+    plan = []
+    video_end = 0
+    audio_end = 0
+    output_frames = 0
+    remaining = video_t
+    overlap_video_steps = 1  # 重叠 1 video latent 步 = 8 像素帧
+    
+    while remaining:
+        if not plan:
+            # 第一个分块
+            chunk_t = min(max_chunk_t, remaining)
+            video_start = 0
+            new_video_t = chunk_t
+            chunk_frame_count = latent_steps_to_pixel_frames(chunk_t)
+            context_audio_t = 0
         else:
-            # 后续分块: 包含重叠 + 新内容
-            remaining = total_latent_steps - latent_pos
-            # 新的 latent 步数 = min(最大块大小 - 重叠, 剩余)
-            new_steps = min(max_chunk_latent - overlap_latent, remaining)
-            chunk_latent_end = latent_pos + new_steps
+            # 后续分块
+            new_video_t = min(max_chunk_t - overlap_video_steps, remaining)
+            chunk_t = new_video_t + overlap_video_steps
+            video_start = video_end - overlap_video_steps
+            chunk_frame_count = latent_steps_to_pixel_frames(chunk_t)
+            # 计算 audio 上下文
+            chunk_audio_t = round(chunk_frame_count * audio_t / total_pixel_frames)
+            context_audio_t = chunk_audio_t - (round(new_video_t * audio_t / total_pixel_frames))
         
-        chunk = ChunkPlan(
-            chunk_index=chunk_index,
-            latent_start=latent_pos,
-            latent_end=chunk_latent_end,
-            pixel_start=latent_steps_to_pixel_frames(latent_pos),
-            pixel_end=latent_steps_to_pixel_frames(chunk_latent_end),
-            is_first=(chunk_index == 0),
-            overlap_latent_steps=overlap_latent if chunk_index > 0 else 0,
-        )
-        chunks.append(chunk)
+        output_frames += chunk_frame_count if not plan else chunk_frame_count - 8
+        next_audio_end = round(output_frames * audio_t / total_pixel_frames)
+        audio_start = 0 if not plan else audio_end - context_audio_t
         
-        # 下一个分块的起始位置 (跳过已生成的内容)
-        if chunk_index == 0:
-            latent_pos = chunk_latent_end
-        else:
-            latent_pos = chunk_latent_end
+        plan.append(ChunkPlan(
+            chunk_index=len(plan),
+            video_start=video_start,
+            video_end=video_start + chunk_t,
+            audio_start=audio_start,
+            audio_end=next_audio_end,
+            frame_start=0 if not plan else output_frames - chunk_frame_count,
+            frame_end=output_frames,
+            is_first=(len(plan) == 0),
+            overlap_video_steps=overlap_video_steps if len(plan) > 0 else 0,
+            context_audio_steps=context_audio_t,
+        ))
         
-        chunk_index += 1
+        video_end += new_video_t
+        audio_end = next_audio_end
+        remaining -= new_video_t
     
-    return chunks
+    return plan
 
 
 # ============================================================================
-# 噪声生成器 (来自 MiniMax H3 Unlimited)
+# 噪声生成器
 # ============================================================================
 
 class _FixedNoise:
-    """固定噪声生成器 - 为每个分块生成固定切片"""
-    def __init__(self, seed: int, noise_tensor: torch.Tensor):
+    """固定噪声生成器"""
+    def __init__(self, seed: int, noise_tensor):
         self.seed = seed
         self.noise_tensor = noise_tensor
     
@@ -154,23 +158,17 @@ class _FixedNoise:
 
 
 # ============================================================================
-# 主节点: LTX Video 分块采样器 (来自 ComfyUI-LTXVideo-Unlimited)
+# 主节点: LTX Video 分块采样器
 # ============================================================================
 
 class LTXVUnlimitedSampler:
     """
-    LTX Video 分块采样器 - Unlimited 版本
+    LTX Video AV 联合分块采样器
     
-    继承自 MiniMax H3 Unlimited 的设计理念:
-    - 分块处理长视频以减少 VRAM 占用
-    - 使用重叠 latent 作为连续引导
-    - 支持任意长度的视频生成
-    
-    工作原理:
-    1. 将长视频 latent 分成多个时序块
-    2. 每个分块包含 overlap_frames 像素帧的重叠引导
-    3. 重叠区域使用零噪声，由前一块的输出引导
-    4. 移除重叠引导部分后拼接输出
+    支持:
+    - NestedTensor AV 联合 latent
+    - 分块处理长视频
+    - 视频和音频的连续引导
     """
     
     @classmethod
@@ -181,7 +179,7 @@ class LTXVUnlimitedSampler:
                 "guider": ("GUIDER", {"tooltip": "引导器"}),
                 "sampler": ("SAMPLER", {"tooltip": "采样器"}),
                 "sigmas": ("SIGMAS", {"tooltip": "噪声调度"}),
-                "latent_image": ("LATENT", {"tooltip": "输入 latent"}),
+                "latent_image": ("LATENT", {"tooltip": "输入 latent (支持 AV 联合 NestedTensor)"}),
             },
             "optional": {
                 "chunk_frames": ("INT", {
@@ -189,21 +187,7 @@ class LTXVUnlimitedSampler:
                     "min": 17,
                     "max": 513,
                     "step": 8,
-                    "tooltip": "每块最大像素帧数 (8n+1 格式，如17,33,65,129). 129帧适合高VRAM, 33帧适合12GB VRAM"
-                }),
-                "overlap_frames": ("INT", {
-                    "default": 8,
-                    "min": 8,
-                    "max": 64,
-                    "step": 8,
-                    "tooltip": "重叠像素帧数（必须是8的倍数），用于连续引导. 8=推荐值"
-                }),
-                "overlap_strength": ("FLOAT", {
-                    "default": 0.5,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "重叠区域的引导强度"
+                    "tooltip": "每块最大像素帧数 (8n+1 格式)"
                 }),
                 "debug": ("BOOLEAN", {
                     "default": False,
@@ -217,22 +201,6 @@ class LTXVUnlimitedSampler:
     FUNCTION = "execute"
     CATEGORY = "video/split"
     
-    DESCRIPTION = """
-    LTX Video 分块采样器 - 将长视频 latent 分块处理以解决 VRAM 问题。
-    
-    工作原理:
-    1. 将长视频 latent 分成多个时序块
-    2. 每个分块包含 overlap_frames 像素帧的重叠引导
-    3. 重叠区域使用零噪声，由前一块的输出引导
-    4. 移除重叠引导部分后拼接输出
-    
-    示例:
-    - 1分钟 24fps 视频 = 1440帧
-    - chunk_frames=129, overlap_frames=8
-    - 分成约 12 个分块
-    - 每块独立采样，VRAM 峰值 ≈ 单块大小
-    """
-    
     def execute(
         self,
         noise,
@@ -241,64 +209,57 @@ class LTXVUnlimitedSampler:
         sigmas,
         latent_image,
         chunk_frames=129,
-        overlap_frames=8,
-        overlap_strength=0.5,
         debug=False,
     ) -> tuple:
-        """
-        执行分块采样
-        
-        流程:
-        1. 验证 latent 格式
-        2. 生成分块计划
-        3. 循环处理每个分块
-        4. 使用重叠引导
-        5. 移除重叠部分
-        6. 拼接输出
-        """
+        """执行 AV 联合分块采样"""
         if debug:
             logging.info("=" * 60)
-            logging.info("LTXVUnlimitedSampler 开始执行")
+            logging.info("LTXVUnlimitedSampler 开始执行 (AV 联合)")
             logging.info("=" * 60)
         
-        # 获取 latent 样本
         samples = latent_image["samples"]
         
-        # 验证是普通视频 latent (5D) 而非嵌套 AV latent
-        if hasattr(samples, 'is_nested') and samples.is_nested:
-            raise ValueError(
-                "LTXVUnlimitedSampler 不支持嵌套 AV latent。"
-                "请使用纯视频 latent (LATENT 类型)。"
-            )
+        # 检查是否是 NestedTensor (AV 联合)
+        is_av_latent = hasattr(samples, 'is_nested') and samples.is_nested
         
-        if samples.ndim != 5:
-            raise ValueError(f"LTXVUnlimitedSampler 需要 5D 视频 latent, got {samples.ndim}D")
+        if is_av_latent:
+            # AV 联合 latent - 获取 video 和 audio
+            streams = samples.unbind()
+            if len(streams) != 2:
+                raise ValueError(f"LTX AV latent expected 2 streams (video, audio), got {len(streams)}")
+            video, audio = streams
+        else:
+            # 纯视频 latent
+            video = samples
+            audio = None
         
-        batch, channels, latent_steps, height, width = samples.shape
-        
-        # 转换为像素帧数
-        total_pixel_frames = latent_steps_to_pixel_frames(latent_steps)
+        # 获取形状
+        video_t = video.shape[2]
+        audio_t = audio.shape[-1] if audio is not None else 0
         
         if debug:
-            logging.info(f"Latent 形状: {samples.shape}")
-            logging.info(f"总像素帧数: {total_pixel_frames}")
-            logging.info(f"每块最大帧数: {chunk_frames}")
-            logging.info(f"重叠帧数: {overlap_frames}")
+            logging.info(f"Video latent: {video.shape}")
+            if audio is not None:
+                logging.info(f"Audio latent: {audio.shape}")
         
         # 生成分块计划
-        chunks = plan_chunks(
-            total_pixel_frames=total_pixel_frames,
-            chunk_frames=chunk_frames,
-            overlap_frames=overlap_frames,
-        )
+        try:
+            chunks = _chunk_plan(video_t, audio_t, chunk_frames)
+        except ValueError as e:
+            if debug:
+                logging.warning(f"分块计划失败: {e}")
+            # 回退到标准采样
+            return comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
+                noise, guider, sampler, sigmas, latent_image
+            )
         
         if debug:
             logging.info(f"分块数量: {len(chunks)}")
             for chunk in chunks:
-                logging.info(f"  Chunk {chunk.chunk_index}: latent [{chunk.latent_start}, {chunk.latent_end}), "
-                           f"pixel [{chunk.pixel_start}, {chunk.pixel_end})")
+                logging.info(f"  Chunk {chunk.chunk_index}: video [{chunk.video_start}, {chunk.video_end}), "
+                           f"audio [{chunk.audio_start}, {chunk.audio_end})")
         
-        # 如果只有一块，直接委托给标准采样器
+        # 单块直接委托
         if len(chunks) == 1:
             return comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
                 noise, guider, sampler, sigmas, latent_image
@@ -318,15 +279,29 @@ class LTXVUnlimitedSampler:
         )
         samples = fixed_latent["samples"]
         
-        # 生成完整的噪声
-        full_noise = noise.generate_noise(latent_image)
+        # 如果是 AV latent，重新获取分离的流
+        if hasattr(samples, 'is_nested') and samples.is_nested:
+            streams = samples.unbind()
+            video, audio = streams
+        
+        # 生成完整噪声
+        full_noise = noise.generate_noise(fixed_latent)
+        if hasattr(full_noise, 'is_nested') and full_noise.is_nested:
+            video_noise, audio_noise = full_noise.unbind()
+        else:
+            video_noise = full_noise
+            audio_noise = None
         
         # 收集输出
-        output_frames = []
-        denoised_frames = []
+        output_video = []
+        output_audio = []
+        denoised_video = []
+        denoised_audio = []
+        previous_video = None
+        previous_audio = None
         chunk_infos = []
         
-        # 原始 guider 条件保存
+        # 保存原始 guider 条件
         original_conds = None
         if hasattr(guider, 'original_conds'):
             original_conds = copy.deepcopy(guider.original_conds)
@@ -340,54 +315,55 @@ class LTXVUnlimitedSampler:
                     logging.info(f"\n处理 Chunk {chunk_idx + 1}/{len(chunks)}")
                 
                 # 准备分块 latent
-                chunk_latent = samples[:, :, chunk.latent_start:chunk.latent_end].clone()
+                vs, ve = chunk.video_start, chunk.video_end
+                aus, aue = chunk.audio_start, chunk.audio_end
                 
-                # 准备分块噪声
-                chunk_noise = full_noise[:, :, chunk.latent_start:chunk.latent_end].clone()
+                if is_av_latent:
+                    chunk_latent = comfy.nested_tensor.NestedTensor((
+                        video[:, :, vs:ve],
+                        audio[..., aus:aue],
+                    ))
+                    chunk_noise = comfy.nested_tensor.NestedTensor((
+                        video_noise[:, :, vs:ve],
+                        audio_noise[..., aus:aue],
+                    ))
+                else:
+                    chunk_latent = video[:, :, vs:ve].clone()
+                    chunk_noise = video_noise[:, :, vs:ve].clone()
                 
-                # 如果不是第一个分块，需要添加重叠引导
-                # 核心机制：将前一块的输出作为引导拼接到当前块
-                overlap_latent_steps = chunk.overlap_latent_steps
-                if not chunk.is_first and overlap_latent_steps > 0:
-                    # 从前一分块的输出中获取重叠部分
-                    prev_output = output_frames[-1]
-                    overlap_start_idx = prev_output.shape[2] - overlap_latent_steps
-                    overlap_latent = prev_output[:, :, overlap_start_idx:].clone()
-                    
-                    if debug:
-                        logging.info(f"  重叠 latent 形状: {overlap_latent.shape}")
-                    
-                    # 将重叠 latent 与当前 chunk 拼接
-                    chunk_latent_with_overlap = torch.cat([overlap_latent, chunk_latent], dim=2)
-                    # 重叠区域用零噪声（由前一块输出引导）
-                    chunk_noise_with_overlap = torch.cat([
-                        torch.zeros_like(overlap_latent),
-                        chunk_noise
-                    ], dim=2)
-                    
-                    chunk_latent = chunk_latent_with_overlap
-                    chunk_noise = chunk_noise_with_overlap
+                # 添加连续引导 (来自前一块)
+                if not chunk.is_first:
+                    # Video 引导
+                    overlap_video = previous_video[:, :, -chunk.overlap_video_steps:].clone()
+                    chunk_latent_with_guide = comfy.nested_tensor.NestedTensor((
+                        torch.cat([overlap_video, video[:, :, vs:ve].clone()], dim=2),
+                        audio[..., aus:aue],
+                    ))
+                    chunk_noise_with_guide = comfy.nested_tensor.NestedTensor((
+                        torch.cat([torch.zeros_like(overlap_video), video_noise[:, :, vs:ve].clone()], dim=2),
+                        audio_noise[..., aus:aue],
+                    ))
+                    chunk_latent = chunk_latent_with_guide
+                    chunk_noise = chunk_noise_with_guide
                 
-                # 构建分块 latent 字典
-                chunk_latent_dict = {
-                    "samples": chunk_latent,
-                }
+                # 构建 latent 字典
+                chunk_latent_dict = {"samples": chunk_latent}
                 
                 # 设置预览分块
                 if preview_execution is not None:
                     preview_execution.set_chunk(
                         chunk_idx,
-                        chunk.latent_start,
-                        chunk.latent_end - 1,
-                        chunk.latent_start + overlap_latent_steps,
-                        chunk.latent_end - 1,
-                        overlap_latent_steps,
+                        chunk.frame_start,
+                        chunk.frame_end - 1,
+                        chunk.frame_start + (8 if not chunk.is_first else 0),
+                        chunk.frame_end - 1,
+                        0 if chunk.is_first else chunk.overlap_video_steps,
                     )
                 
                 # 执行采样
                 try:
                     result = comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
-                        noise=_FixedNoise(noise.seed + chunk_idx, chunk_noise),
+                        noise=_FixedNoise((noise.seed + chunk_idx) & 0xffffffffffffffff, chunk_noise),
                         guider=guider,
                         sampler=sampler,
                         sigmas=sigmas,
@@ -402,29 +378,38 @@ class LTXVUnlimitedSampler:
                 else:
                     output, denoised = result[0], result[1]
                 
-                # 提取输出
-                output_samples = output["samples"]
-                denoised_samples = denoised["samples"]
+                # 分离输出
+                if is_av_latent:
+                    out_video, out_audio = output["samples"].unbind()
+                    den_video, den_audio = denoised["samples"].unbind()
+                else:
+                    out_video = output["samples"]
+                    out_audio = None
+                    den_video = denoised["samples"]
+                    den_audio = None
                 
-                # 如果有重叠引导，移除重叠部分
-                if not chunk.is_first and chunk.overlap_latent_steps > 0:
-                    trim_steps = chunk.overlap_latent_steps
-                    output_samples = output_samples[:, :, trim_steps:]
-                    denoised_samples = denoised_samples[:, :, trim_steps:]
-                    
-                    if debug:
-                        logging.info(f"  移除 {trim_steps} 步重叠后形状: {output_samples.shape}")
+                # 更新前一块引用
+                previous_video = out_video
+                previous_audio = out_audio
                 
-                output_frames.append(output_samples)
-                denoised_frames.append(denoised_samples)
+                # 移除引导部分
+                video_trim = 0 if chunk.is_first else chunk.overlap_video_steps
+                audio_trim = 0 if chunk.is_first else chunk.context_audio_steps
+                
+                output_video.append(out_video[:, :, video_trim:].clone())
+                if out_audio is not None:
+                    output_audio.append(out_audio[..., audio_trim:].clone())
+                denoised_video.append(den_video[:, :, video_trim:].clone())
+                if den_audio is not None:
+                    denoised_audio.append(den_audio[..., audio_trim:].clone())
                 
                 chunk_info = f"Chunk {chunk_idx + 1}/{len(chunks)}: " \
-                           f"latents [{chunk.latent_start}, {chunk.latent_end}), " \
-                           f"output shape {output_samples.shape}"
+                           f"video [{chunk.video_start}, {chunk.video_end}), " \
+                           f"audio [{chunk.audio_start}, {chunk.audio_end})"
                 chunk_infos.append(chunk_info)
                 
                 if debug:
-                    logging.info(f"  输出形状: {output_samples.shape}")
+                    logging.info(f"  输出 video 形状: {out_video[:, :, video_trim:].shape}")
         
         finally:
             # 恢复原始 guider 条件
@@ -434,32 +419,33 @@ class LTXVUnlimitedSampler:
             if preview_execution is not None:
                 preview_execution.close()
         
-        # 拼接所有分块输出
-        final_output_samples = torch.cat(output_frames, dim=2)
-        final_denoised_samples = torch.cat(denoised_frames, dim=2)
+        # 组装最终输出
+        final_video = torch.cat(output_video, dim=2)
+        if is_av_latent and output_audio:
+            final_audio = torch.cat(output_audio, dim=-1)
+            final_output_samples = comfy.nested_tensor.NestedTensor((final_video, final_audio))
+            final_denoised_samples = comfy.nested_tensor.NestedTensor((
+                torch.cat(denoised_video, dim=2),
+                torch.cat(denoised_audio, dim=-1),
+            ))
+        else:
+            final_output_samples = final_video
+            final_denoised_samples = torch.cat(denoised_video, dim=2)
+        
+        # 构建输出字典
+        final_output = {"samples": final_output_samples}
+        final_denoised = {"samples": final_denoised_samples}
+        
+        if "batch_index" in latent_image:
+            final_output["batch_index"] = latent_image["batch_index"]
+            final_denoised["batch_index"] = latent_image["batch_index"]
         
         if debug:
             logging.info(f"\n最终输出形状: {final_output_samples.shape}")
             logging.info("=" * 60)
         
-        # 构建输出字典
-        final_output = {
-            "samples": final_output_samples,
-        }
-        final_denoised = {
-            "samples": final_denoised_samples,
-        }
-        
-        # 复制批次索引
-        if "batch_index" in latent_image:
-            final_output["batch_index"] = latent_image["batch_index"]
-            final_denoised["batch_index"] = latent_image["batch_index"]
-        
-        chunk_info_text = "\n".join(chunk_infos)
-        
-        return (final_output, final_denoised, chunk_info_text)
+        return (final_output, final_denoised, "\n".join(chunk_infos))
     
-    # 别名
     sample = execute
 
 
@@ -471,17 +457,13 @@ def get_chunk_preview_frames(
     total_frames: int,
     chunk_frames: int,
     overlap_frames: int = 8,
-    frame_stride: int = 1,
 ) -> list[tuple[int, int, int]]:
-    """
-    计算预览用的帧索引范围
-    
-    Returns:
-        [(chunk_idx, frame_start, frame_end), ...]
-    """
+    """计算预览用的帧索引范围"""
     try:
-        chunks = plan_chunks(total_frames, chunk_frames, overlap_frames)
-        return [(c.chunk_index, c.pixel_start, c.pixel_end) for c in chunks]
+        video_t = pixel_frames_to_latent_steps(total_frames)
+        # 估算 audio_t (需要从实际 latent 获取，这里用比例估算)
+        chunks = _chunk_plan(video_t, video_t, chunk_frames)
+        return [(c.chunk_index, c.frame_start, c.frame_end) for c in chunks]
     except ValueError:
         return [(0, 0, total_frames)]
 
@@ -495,12 +477,7 @@ import folder_paths
 
 
 class LTXVUnlimitedPreview(io.ComfyNode):
-    """
-    LTX Video Unlimited Preview - 实时预览节点
-    
-    在分块采样过程中实时预览生成的视频。
-    使用 Latent2RGB 或 Tiny VAE 解码预览帧。
-    """
+    """LTX Video Unlimited Preview - 实时预览节点"""
     
     @classmethod
     def define_schema(cls):
@@ -508,21 +485,16 @@ class LTXVUnlimitedPreview(io.ComfyNode):
             node_id="LTXVUnlimitedPreview",
             display_name="LTX Video Unlimited Preview",
             category="video/split",
-            description="在分块采样过程中实时预览 LTX Video 输出。支持 Latent2RGB 和 Tiny VAE 解码模式。",
+            description="在分块采样过程中实时预览 LTX Video 输出。",
             inputs=[
                 io.Model.Input("model"),
-                io.Int.Input("max_resolution", default=512, min=64, max=2048, step=64,
-                            tooltip="预览最大分辨率"),
-                io.Int.Input("quality", default=75, min=30, max=100, step=1,
-                            tooltip="WebP 编码质量"),
-                io.Float.Input("fps", default=24.0, min=1.0, max=60.0, step=0.001,
-                            tooltip="预览帧率"),
-                io.Int.Input("frame_stride", default=1, min=1, max=16, step=1,
-                            tooltip="预览间隔（每 N 帧预览一次）"),
+                io.Int.Input("max_resolution", default=512, min=64, max=2048, step=64),
+                io.Int.Input("quality", default=75, min=30, max=100, step=1),
+                io.Float.Input("fps", default=24.0, min=1.0, max=60.0, step=0.001),
+                io.Int.Input("frame_stride", default=1, min=1, max=16, step=1),
                 io.Combo.Input("tiny_vae", 
                              options=["none"] + folder_paths.get_filename_list("vae_approx"), 
-                             default="none",
-                             tooltip="可选的 Tiny VAE 解码器。None 使用 Latent2RGB。"),
+                             default="none"),
             ],
             outputs=[io.Model.Output()],
             hidden=[io.Hidden.unique_id],
