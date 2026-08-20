@@ -65,6 +65,13 @@
 | **Audio Loop** | 音频循环 |
 | **Audio Cut** | 音频切割 |
 
+### LTX 放大处理节点 🚀
+
+| 节点名称 | 功能 |
+|---------|------|
+| **VideoSplit SamplerCustomAdvanced** | LTX 分块采样器，解决高分辨率长视频的 VRAM 问题 |
+| **VideoSplit VRAMEstimator** | VRAM 估算器，估算显存需求 |
+
 ### 文字/字幕节点 📝
 
 | 节点名称 | 功能 |
@@ -447,8 +454,9 @@ VHS Load Video ─────┤
 
 ## 版本
 
+- v0.10.0 - 新增 LTX 分块采样器（VideoSplit SamplerCustomAdvanced），支持长视频高分辨率放大；新增连续引导机制，解决分块接缝问题
+- v0.9.0 - 新增视频翻译流水线节点（VoiceSeparator/ENSpeechRecognizer/Translator/ZHTTS）
 - v0.8.0 - 新增可视化时间轴编辑器（Audio Timeline Editor），支持拖拽校准音频位置；新增帧级对齐的 AudioCompose 节点
-- v0.7.0 - 新增音频定位合成节点（AudioCompose），支持帧级对齐
 - v0.5.0 - 新增音频增强（多轨混合、时长匹配）、特效节点（抠像、背景替换）
 - v0.4.0 - 新增音频处理、文字字幕、滤镜调色、转场效果节点，打造完整剪映功能
 - v0.3.0 - 新增剪映功能节点：VideoReverse、VideoResample、VideoSampleFrames、VideoTimeRemap、VideoConcat、VideoFade、VideoOverlay、FrameInterpolate、FrameDeduplicate
