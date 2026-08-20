@@ -169,6 +169,7 @@ class LTXVUnlimitedSampler:
     - NestedTensor AV 联合 latent
     - 分块处理长视频
     - 视频和音频的连续引导
+    - 渐进式解码（边采样边解码，降低峰值显存）
     """
     
     @classmethod
@@ -182,12 +183,17 @@ class LTXVUnlimitedSampler:
                 "latent_image": ("LATENT", {"tooltip": "输入 latent (支持 AV 联合 NestedTensor)"}),
             },
             "optional": {
+                "vae": ("VAE", {"tooltip": "VAE (用于渐进式解码)"}),
                 "chunk_frames": ("INT", {
-                    "default": 129,
+                    "default": 33,
                     "min": 17,
                     "max": 513,
                     "step": 8,
-                    "tooltip": "每块最大像素帧数 (8n+1 格式)"
+                    "tooltip": "每块最大像素帧数 (8n+1 格式), 12GB 建议 33"
+                }),
+                "progressive_decode": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "启用渐进式解码: 边采样边解码，降低峰值显存"
                 }),
                 "debug": ("BOOLEAN", {
                     "default": False,
@@ -196,8 +202,8 @@ class LTXVUnlimitedSampler:
             },
         }
     
-    RETURN_TYPES = ("LATENT", "LATENT", "STRING")
-    RETURN_NAMES = ("output", "denoised_output", "chunk_info")
+    RETURN_TYPES = ("LATENT", "LATENT", "IMAGE", "STRING")
+    RETURN_NAMES = ("output", "denoised_output", "progressive_images", "chunk_info")
     FUNCTION = "execute"
     CATEGORY = "video/split"
     
@@ -208,13 +214,16 @@ class LTXVUnlimitedSampler:
         sampler,
         sigmas,
         latent_image,
-        chunk_frames=129,
+        vae=None,
+        chunk_frames=33,
+        progressive_decode=False,
         debug=False,
     ) -> tuple:
         """执行 AV 联合分块采样"""
         if debug:
             logging.info("=" * 60)
             logging.info("LTXVUnlimitedSampler 开始执行 (AV 联合)")
+            logging.info(f"progressive_decode: {progressive_decode}")
             logging.info("=" * 60)
         
         samples = latent_image["samples"]
@@ -297,6 +306,7 @@ class LTXVUnlimitedSampler:
         output_audio = []
         denoised_video = []
         denoised_audio = []
+        all_decoded_images = []  # 渐进式解码收集
         previous_video = None
         previous_audio = None
         chunk_infos = []
@@ -406,6 +416,21 @@ class LTXVUnlimitedSampler:
                 if den_audio is not None:
                     denoised_audio.append(den_audio[..., audio_trim:].clone())
                 
+                # 渐进式解码：每个 chunk 完成后立即解码
+                if progressive_decode and vae is not None:
+                    try:
+                        chunk_video = out_video[:, :, video_trim:].clone()
+                        images = vae.decode(chunk_video)
+                        if len(images.shape) == 5:
+                            images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
+                        all_decoded_images.append(images)
+                        
+                        if debug:
+                            logging.info(f"  渐进式解码: {images.shape}")
+                    except Exception as e:
+                        if debug:
+                            logging.warning(f"  渐进式解码失败: {e}")
+                
                 chunk_info = f"Chunk {chunk_idx + 1}/{len(chunks)}: " \
                            f"video [{chunk.video_start}, {chunk.video_end}), " \
                            f"audio [{chunk.audio_start}, {chunk.audio_end})"
@@ -447,7 +472,13 @@ class LTXVUnlimitedSampler:
             logging.info(f"\n最终输出形状: {final_output_samples.shape}")
             logging.info("=" * 60)
         
-        return (final_output, final_denoised, "\n".join(chunk_infos))
+        # 拼接渐进式解码的图像
+        if progressive_decode and all_decoded_images:
+            progressive_images = torch.cat(all_decoded_images, dim=0)
+        else:
+            progressive_images = torch.zeros(1, 256, 256, 3)  # 空图像占位
+        
+        return (final_output, final_denoised, progressive_images, "\n".join(chunk_infos))
     
     sample = execute
 
