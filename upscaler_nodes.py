@@ -24,6 +24,11 @@ class VideoSplitVRAMEstimator:
     - 目标分辨率
     - 显卡显存大小
     - 每块最大帧数
+    
+    12GB VRAM 参考配置:
+    - 720p (1280x720): chunk_frames=33 可用
+    - 1080p (1920x1080): chunk_frames=17 勉强可用
+    - 更高分辨率需要分块或 offload
     """
     
     @classmethod
@@ -38,8 +43,8 @@ class VideoSplitVRAMEstimator:
                     "tooltip": "视频总帧数 (1分钟@24fps = 1440帧)"
                 }),
                 "target_resolution": ("STRING", {
-                    "default": "3840x2160",
-                    "tooltip": "目标分辨率 (宽x高), 如 3840x2160 表示 4K"
+                    "default": "1280x720",
+                    "tooltip": "目标分辨率 (宽x高), 12GB 建议 1280x720"
                 }),
                 "vram_gb": ("FLOAT", {
                     "default": 12.0,
@@ -53,7 +58,7 @@ class VideoSplitVRAMEstimator:
                     "min": 17,
                     "max": 129,
                     "step": 8,
-                    "tooltip": "每块最大像素帧数 (8n+1 格式)"
+                    "tooltip": "每块最大像素帧数 (8n+1 格式), 12GB 建议 33"
                 }),
             },
         }
@@ -176,14 +181,14 @@ class LTXVRAMManager:
             else:
                 vram_mode = "balanced"
         
-        # 自动检测分辨率
+        # 自动检测分辨率 (基于 12GB 实测优化)
         if resolution_hint == "auto":
-            if total_vram >= 22:
+            if total_vram >= 24:
                 resolution_hint = "4K (3840x2160)"
             elif total_vram >= 16:
                 resolution_hint = "2K (2560x1440)"
             elif total_vram >= 12:
-                resolution_hint = "1080p (1920x1080)"
+                resolution_hint = "720p (1280x720)"  # 12GB 建议 720p
             else:
                 resolution_hint = "720p (1280x720)"
         
@@ -207,15 +212,17 @@ class LTXVRAMManager:
         else:
             info_lines.append("Strategy: 平衡 offloading")
         
-        # LTX Video 特有建议
+        # LTX Video 特有建议 (12GB 实测优化)
         info_lines.append("")
         info_lines.append("LTX Video 分块采样建议:")
         if total_vram >= 24:
-            info_lines.append(f"  chunk_frames: 129 (2K@24fps 可用)")
+            info_lines.append(f"  chunk_frames: 129 (4K@24fps 可用)")
         elif total_vram >= 16:
-            info_lines.append(f"  chunk_frames: 65 (1080p@24fps 可用)")
+            info_lines.append(f"  chunk_frames: 65 (2K@24fps 可用)")
         elif total_vram >= 12:
             info_lines.append(f"  chunk_frames: 33 (720p@24fps 可用)")
+            info_lines.append(f"  chunk_frames: 17 (1080p@24fps 勉强可用)")
+            info_lines.append("  建议使用 --lowvram 启动 ComfyUI")
         
         info_text = "\n".join(info_lines)
         print(f"[ltx-vram] {info_text}", flush=True)
