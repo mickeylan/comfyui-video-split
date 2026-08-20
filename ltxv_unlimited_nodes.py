@@ -333,15 +333,18 @@ class LTXVUnlimitedSampler:
                 
                 # 添加连续引导 (来自前一块)
                 if not chunk.is_first:
-                    # Video 引导
+                    # Video 引导: 拼接前一块末尾 latent
                     overlap_video = previous_video[:, :, -chunk.overlap_video_steps:].clone()
+                    # Audio 引导: 拼接前一块末尾 audio
+                    overlap_audio = previous_audio[..., -chunk.context_audio_steps:].clone()
+                    
                     chunk_latent_with_guide = comfy.nested_tensor.NestedTensor((
                         torch.cat([overlap_video, video[:, :, vs:ve].clone()], dim=2),
-                        audio[..., aus:aue],
+                        torch.cat([overlap_audio, audio[..., aus:aue].clone()], dim=-1),
                     ))
                     chunk_noise_with_guide = comfy.nested_tensor.NestedTensor((
                         torch.cat([torch.zeros_like(overlap_video), video_noise[:, :, vs:ve].clone()], dim=2),
-                        audio_noise[..., aus:aue],
+                        torch.cat([torch.zeros_like(overlap_audio), audio_noise[..., aus:aue].clone()], dim=-1),
                     ))
                     chunk_latent = chunk_latent_with_guide
                     chunk_noise = chunk_noise_with_guide
