@@ -334,10 +334,53 @@ class VideoSplitSamplerCustomAdvanced:
         if samples.ndim != 5:
             raise ValueError(f"VideoSplitSamplerCustomAdvanced 需要 5D 视频 latent, got {samples.ndim}D")
         
+        latent_steps = samples.shape[2]
+        total_pixel_frames = latent_steps_to_pixel_frames(latent_steps)
+        
+        # 生成分块计划
+        try:
+            chunks = plan_chunks(
+                total_pixel_frames=total_pixel_frames,
+                chunk_frames=chunk_frames,
+                overlap_frames=overlap_frames,
+            )
+        except ValueError:
+            # 无效参数，直接委托
+            return SamplerCustomAdvanced.execute(noise, guider, sampler, sigmas, latent_image)
+        
+        # 如果只有一块，直接委托给标准采样器（来自 MiniMax H3 的优化）
+        if len(chunks) == 1:
+            return SamplerCustomAdvanced.execute(noise, guider, sampler, sigmas, latent_image)
+        
+        # 分块时拒绝 denoise mask（来自 MiniMax H3）
+        if "noise_mask" in latent_image:
+            raise ValueError("VideoSplitSamplerCustomAdvanced 分块时不支持 denoise mask")
+        
+        # 修复空 latent 通道（来自 MiniMax H3）
+        fixed_latent = latent_image.copy()
+        fixed_latent["samples"] = comfy.sample.fix_empty_latent_channels(
+            guider.model_patcher,
+            samples,
+            latent_image.get("downscale_ratio_spacial"),
+            latent_image.get("downscale_ratio_temporal"),
+        )
+        samples = fixed_latent["samples"]
+        
         batch, channels, latent_steps, height, width = samples.shape
         
-        # 转换为像素帧数
+        # 更新像素帧数（fix_empty_latent_channels 可能改变 latent 形状）
         total_pixel_frames = latent_steps_to_pixel_frames(latent_steps)
+        
+        # 重新计算分块计划（因为 latent 形状可能改变）
+        chunks = plan_chunks(
+            total_pixel_frames=total_pixel_frames,
+            chunk_frames=chunk_frames,
+            overlap_frames=overlap_frames,
+        )
+        
+        # 再次检查是否需要分块
+        if len(chunks) == 1:
+            return SamplerCustomAdvanced.execute(noise, guider, sampler, sigmas, fixed_latent)
         
         if debug:
             logging.info(f"Latent 形状: {samples.shape}")
@@ -347,13 +390,6 @@ class VideoSplitSamplerCustomAdvanced:
         
         # 生成完整的噪声
         full_noise = noise.generate_noise(latent_image)
-        
-        # 分块规划
-        chunks = plan_chunks(
-            total_pixel_frames=total_pixel_frames,
-            chunk_frames=chunk_frames,
-            overlap_frames=overlap_frames,
-        )
         
         if debug:
             logging.info(f"分块数量: {len(chunks)}")
