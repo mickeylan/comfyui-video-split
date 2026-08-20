@@ -10,18 +10,23 @@ LTX Video Sampler Unlimited - AV 联合分块采样器
 4. 重新组合 video 和 audio
 """
 
-import copy
 import logging
 from dataclasses import dataclass
 
 import torch
 
 import comfy
+import comfy.hooks
+import comfy.model_patcher
+import comfy.multigpu
 import comfy.nested_tensor
 import comfy.patcher_extension
+import comfy.sampler_helpers
+import comfy.samplers
 import comfy_extras.nodes_custom_sampler
+import latent_preview
 
-from .preview import begin_preview_execution, PREVIEW_WRAPPER_KEY
+from .preview import begin_preview_execution
 
 
 # ============================================================================
@@ -72,89 +77,197 @@ class ChunkPlan:
 
 
 def _chunk_plan(video_t, audio_t, chunk_frames, time_scale_factor=8):
-    """
-    生成分块计划 (来自 MiniMax H3 Unlimited)
-    
-    Args:
-        video_t: video latent 步数
-        audio_t: audio latent 步数
-        chunk_frames: 每块最大像素帧数
-        time_scale_factor: 8 (LTX 固定)
-    
-    Returns:
-        分块计划列表
-    """
-    # 计算每块最大 video latent 步数
+    chunk_frames = max(9, chunk_frames)
     max_chunk_frames = chunk_frames - (chunk_frames - 1) % time_scale_factor
-    max_chunk_t = ((max_chunk_frames - 1) // time_scale_factor) * time_scale_factor + 1
-    
-    # 验证 video latent 格式
-    if video_t < 1 or (video_t - 1) % time_scale_factor != 0:
-        raise ValueError(f"LTX video latent must be on 8n+1 frame grid, got video_t={video_t}")
-    
-    total_pixel_frames = latent_steps_to_pixel_frames(video_t)
-    
+    max_chunk_t = pixel_frames_to_latent_steps(max_chunk_frames)
+    if video_t < 1:
+        raise ValueError(f"LTX video latent must contain at least one step, got {video_t}")
+    if max_chunk_t < 2:
+        raise ValueError("LTX chunk must contain at least two latent steps")
+
+    overlap_video_steps = 1
     plan = []
     video_end = 0
-    audio_end = 0
-    output_frames = 0
-    remaining = video_t
-    overlap_video_steps = 1  # 重叠 1 video latent 步 = 8 像素帧
-    
-    while remaining:
-        if not plan:
-            # 第一个分块
-            chunk_t = min(max_chunk_t, remaining)
-            video_start = 0
-            new_video_t = chunk_t
-            chunk_frame_count = latent_steps_to_pixel_frames(chunk_t)
-            context_audio_t = 0
-        else:
-            # 后续分块
-            new_video_t = min(max_chunk_t - overlap_video_steps, remaining)
-            chunk_t = new_video_t + overlap_video_steps
-            video_start = video_end - overlap_video_steps
-            chunk_frame_count = latent_steps_to_pixel_frames(chunk_t)
-            # 计算 audio 上下文
-            chunk_audio_t = round(chunk_frame_count * audio_t / total_pixel_frames)
-            context_audio_t = chunk_audio_t - (round(new_video_t * audio_t / total_pixel_frames))
-        
-        output_frames += chunk_frame_count if not plan else chunk_frame_count - 8
-        next_audio_end = round(output_frames * audio_t / total_pixel_frames)
-        audio_start = 0 if not plan else audio_end - context_audio_t
-        
+    while video_end < video_t:
+        video_start = 0 if not plan else video_end - overlap_video_steps
+        next_video_end = min(video_start + max_chunk_t, video_t)
+        audio_start = round(video_start * audio_t / video_t) if audio_t else 0
+        audio_end = round(next_video_end * audio_t / video_t) if audio_t else 0
+        context_audio_steps = 0 if not plan else round(overlap_video_steps * audio_t / video_t)
+        frame_start = 0 if not plan else latent_steps_to_pixel_frames(video_start)
+        frame_end = latent_steps_to_pixel_frames(next_video_end)
         plan.append(ChunkPlan(
             chunk_index=len(plan),
             video_start=video_start,
-            video_end=video_start + chunk_t,
+            video_end=next_video_end,
             audio_start=audio_start,
-            audio_end=next_audio_end,
-            frame_start=0 if not plan else output_frames - chunk_frame_count,
-            frame_end=output_frames,
-            is_first=(len(plan) == 0),
-            overlap_video_steps=overlap_video_steps if len(plan) > 0 else 0,
-            context_audio_steps=context_audio_t,
+            audio_end=audio_end,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            is_first=not plan,
+            overlap_video_steps=0 if not plan else overlap_video_steps,
+            context_audio_steps=context_audio_steps,
         ))
-        
-        video_end += new_video_t
-        audio_end = next_audio_end
-        remaining -= new_video_t
-    
+        video_end = next_video_end
+
     return plan
 
 
-# ============================================================================
-# 噪声生成器
-# ============================================================================
+def _slice_mask(mask, start, end, reference):
+    if mask is None:
+        return torch.ones_like(reference[:, :1])
+    mask = comfy.utils.reshape_mask(mask, reference.shape)
+    return mask[:, :1, start:end].clone()
 
-class _FixedNoise:
-    """固定噪声生成器"""
-    def __init__(self, seed: int, noise_tensor):
-        self.seed = seed
-        self.noise_tensor = noise_tensor
-    
-    def generate_noise(self, latent):
-        return self.noise_tensor
+
+def _copy_conds(conds):
+    return {name: [cond.copy() for cond in values] for name, values in conds.items()}
+
+
+def _conditioning_for_chunk(original_conds, video_start, video_end, tokens_per_frame):
+    chunk_conds = {}
+    for name, conditioning in original_conds.items():
+        entries = []
+        for cond in conditioning:
+            cond = cond.copy()
+            # CFGGuider.original_conds contains converted conditioning dictionaries,
+            # not the public [embedding, metadata] pairs.
+            cond.pop("keyframe_idxs", None)
+            cond.pop("guide_attention_entries", None)
+            generated = cond.get("generated_keyframes")
+            if generated is not None:
+                first = generated["first_latent_frame"]
+                last = first + generated["num_keyframes"]
+                local_start = max(first, video_start)
+                local_end = min(last, video_end)
+                if local_start < local_end:
+                    cond["generated_keyframes"] = {
+                        **generated,
+                        "first_latent_frame": local_start - video_start,
+                        "num_keyframes": local_end - local_start,
+                        "tokens_per_frame": tokens_per_frame,
+                    }
+                else:
+                    cond.pop("generated_keyframes", None)
+            entries.append(cond)
+        chunk_conds[name] = entries
+    return chunk_conds
+
+
+class _PreparedGuiderSession:
+    def __init__(self, guider, sampler, sigmas, representative_noise, representative_conds):
+        self.guider = guider
+        self.sampler = sampler
+        self.sigmas = sigmas
+        self.representative_noise = representative_noise
+        self.representative_conds = representative_conds
+        self.original_model_options = guider.model_options
+        self.original_hook_mode = guider.model_patcher.hook_mode
+        self.multigpu_patchers = []
+        self.device_context = None
+
+    @staticmethod
+    def _pack(samples):
+        if samples.is_nested:
+            streams = samples.unbind()
+            packed, shapes = comfy.utils.pack_latents(streams)
+            return packed, shapes
+        return samples, [samples.shape]
+
+    @staticmethod
+    def _pack_mask(mask, shapes, device):
+        if mask is None:
+            return None
+        masks = list(mask.unbind()) if mask.is_nested else [mask]
+        masks = masks[:len(shapes)]
+        for index in range(len(masks), len(shapes)):
+            masks.append(torch.ones(shapes[index]))
+        masks = [comfy.sampler_helpers.prepare_mask(item, shape, device) for item, shape in zip(masks, shapes)]
+        packed = comfy.utils.pack_latents(masks)[0] if len(masks) > 1 else masks[0]
+        return packed.float()
+
+    def __enter__(self):
+        packed_noise, _ = self._pack(self.representative_noise)
+        self.guider.conds = _copy_conds(self.representative_conds)
+        comfy.samplers.preprocess_conds_hooks(self.guider.conds)
+        self.guider.model_options = comfy.model_patcher.create_model_options_clone(self.original_model_options)
+        if comfy.samplers.get_total_hook_groups_in_conds(self.guider.conds) <= 1:
+            self.guider.model_patcher.hook_mode = comfy.hooks.EnumHookMode.MinVram
+        comfy.sampler_helpers.prepare_model_patcher(self.guider.model_patcher, self.guider.conds, self.guider.model_options)
+        comfy.samplers.filter_registered_hooks_on_conds(self.guider.conds, self.guider.model_options)
+        self.guider.inner_model, self.guider.conds, self.guider.loaded_models = comfy.sampler_helpers.prepare_sampling(
+            self.guider.model_patcher, packed_noise.shape, self.guider.conds, self.guider.model_options
+        )
+        self.device = self.guider.model_patcher.load_device
+        self.multigpu_patchers = comfy.sampler_helpers.prepare_model_patcher_multigpu_clones(
+            self.guider.model_patcher, self.guider.loaded_models, self.guider.model_options
+        )
+        if self.multigpu_patchers:
+            devices = [self.device] + [patcher.load_device for patcher in self.multigpu_patchers]
+            self.guider.model_options["multigpu_thread_pool"] = comfy.multigpu.MultiGPUThreadPool(devices)
+        self.device_context = comfy.model_management.cuda_device_context(self.device)
+        self.device_context.__enter__()
+        comfy.samplers.cast_to_load_options(
+            self.guider.model_options, device=self.device, dtype=self.guider.model_patcher.model_dtype()
+        )
+        self.guider.model_patcher.pre_run()
+        for patcher in self.multigpu_patchers:
+            patcher.pre_run()
+        return self
+
+    def sample(self, chunk_noise, chunk_latent, noise_mask, chunk_conds, seed):
+        packed_noise, shapes = self._pack(chunk_noise)
+        packed_latent, _ = self._pack(chunk_latent)
+        packed_mask = self._pack_mask(noise_mask, shapes, self.device)
+        self.guider.conds = _copy_conds(chunk_conds)
+        comfy.samplers.preprocess_conds_hooks(self.guider.conds)
+        comfy.samplers.filter_registered_hooks_on_conds(self.guider.conds, self.guider.model_options)
+
+        x0_output = {}
+        callback = latent_preview.prepare_callback(self.guider.model_patcher, self.sigmas.shape[-1] - 1, x0_output)
+        if len(shapes) > 1 and callback is not None:
+            packed_callback = callback
+            def callback(step, x0, x, total_steps):
+                x0 = comfy.nested_tensor.NestedTensor(comfy.utils.unpack_latents(x0, shapes))
+                x = comfy.nested_tensor.NestedTensor(comfy.utils.unpack_latents(x, shapes))
+                return packed_callback(step, x0, x, total_steps)
+
+        packed_noise = packed_noise.to(device=self.device, dtype=torch.float32)
+        packed_latent = packed_latent.to(device=self.device, dtype=torch.float32)
+        sigmas = self.sigmas.to(self.device)
+        output = self.guider.inner_sample(
+            packed_noise, packed_latent, self.device, self.sampler, sigmas, packed_mask,
+            callback, not comfy.utils.PROGRESS_BAR_ENABLED, seed, latent_shapes=shapes
+        )
+        streams = comfy.utils.unpack_latents(output, shapes) if len(shapes) > 1 else [output]
+        samples = comfy.nested_tensor.NestedTensor(streams) if len(shapes) > 1 else streams[0]
+
+        x0 = x0_output.get("x0")
+        if x0 is None:
+            denoised = samples
+        else:
+            if len(shapes) > 1 and not x0.is_nested:
+                x0 = comfy.nested_tensor.NestedTensor(comfy.utils.unpack_latents(x0, shapes))
+            denoised = self.guider.model_patcher.model.process_latent_out(x0.cpu())
+        return samples, denoised
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pool = self.guider.model_options.pop("multigpu_thread_pool", None)
+        if pool is not None:
+            pool.shutdown()
+        self.guider.model_patcher.cleanup()
+        for patcher in self.multigpu_patchers:
+            patcher.cleanup()
+        comfy.sampler_helpers.cleanup_models(self.guider.conds, self.guider.loaded_models)
+        comfy.samplers.cast_to_load_options(self.guider.model_options, device=self.guider.model_patcher.offload_device)
+        self.guider.model_options = self.original_model_options
+        self.guider.model_patcher.hook_mode = self.original_hook_mode
+        self.guider.model_patcher.restore_hook_patches()
+        if self.device_context is not None:
+            self.device_context.__exit__(exc_type, exc_value, traceback)
+        for attribute in ("conds", "inner_model", "loaded_models"):
+            if hasattr(self.guider, attribute):
+                delattr(self.guider, attribute)
 
 
 # ============================================================================
@@ -183,17 +296,31 @@ class LTXVUnlimitedSampler:
                 "latent_image": ("LATENT", {"tooltip": "输入 latent (支持 AV 联合 NestedTensor)"}),
             },
             "optional": {
-                "vae": ("VAE", {"tooltip": "VAE (用于渐进式解码)"}),
+                "vae": ("VAE", {"tooltip": "LTX Video VAE（128 通道），不是 LTX Audio VAE"}),
                 "chunk_frames": ("INT", {
-                    "default": 33,
-                    "min": 17,
+                    "default": 9,
+                    "min": 9,
                     "max": 513,
-                    "step": 8,
-                    "tooltip": "每块最大像素帧数 (8n+1 格式), 12GB 建议 33"
+                    "step": 1,
+                    "tooltip": "每块最大像素帧数；后端自动向下对齐为 8n+1，最低 9 帧"
                 }),
                 "progressive_decode": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "启用渐进式解码: 边采样边解码，降低峰值显存"
+                    "tooltip": "采样完成后使用 tiled VAE 解码到 CPU；必须连接 vae 输入"
+                }),
+                "vae_tile_size": ("INT", {
+                    "default": 128,
+                    "min": 128,
+                    "max": 1024,
+                    "step": 32,
+                    "tooltip": "VAE 空间瓦片像素尺寸；显存不足时降低"
+                }),
+                "vae_temporal_size": ("INT", {
+                    "default": 2,
+                    "min": 2,
+                    "max": 64,
+                    "step": 1,
+                    "tooltip": "VAE 每次解码的 latent 时间步数；显存不足时使用 2"
                 }),
                 "debug": ("BOOLEAN", {
                     "default": False,
@@ -215,11 +342,16 @@ class LTXVUnlimitedSampler:
         sigmas,
         latent_image,
         vae=None,
-        chunk_frames=33,
+        chunk_frames=9,
         progressive_decode=False,
+        vae_tile_size=128,
+        vae_temporal_size=2,
         debug=False,
     ) -> tuple:
         """执行 AV 联合分块采样"""
+        if progressive_decode and vae is None:
+            raise ValueError("progressive_decode requires the LTX Video VAE connected to the vae input")
+
         if debug:
             logging.info("=" * 60)
             logging.info("LTXVUnlimitedSampler 开始执行 (AV 联合)")
@@ -241,26 +373,24 @@ class LTXVUnlimitedSampler:
             # 纯视频 latent
             video = samples
             audio = None
+
+        if progressive_decode and (vae.latent_dim != 3 or vae.latent_channels != video.shape[1]):
+            raise ValueError(
+                f"progressive_decode requires an LTX Video VAE for {video.shape[1]}-channel video latents; "
+                f"the connected VAE accepts {vae.latent_channels} channels with latent_dim={vae.latent_dim}. "
+                "Do not connect the LTX Audio VAE."
+            )
         
         # 获取形状
         video_t = video.shape[2]
-        audio_t = audio.shape[-1] if audio is not None else 0
+        audio_t = audio.shape[2] if audio is not None else 0
         
         if debug:
             logging.info(f"Video latent: {video.shape}")
             if audio is not None:
                 logging.info(f"Audio latent: {audio.shape}")
         
-        # 生成分块计划
-        try:
-            chunks = _chunk_plan(video_t, audio_t, chunk_frames)
-        except ValueError as e:
-            if debug:
-                logging.warning(f"分块计划失败: {e}")
-            # 回退到标准采样
-            return comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
-                noise, guider, sampler, sigmas, latent_image
-            )
+        chunks = _chunk_plan(video_t, audio_t, chunk_frames)
         
         if debug:
             logging.info(f"分块数量: {len(chunks)}")
@@ -273,10 +403,6 @@ class LTXVUnlimitedSampler:
             return comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
                 noise, guider, sampler, sigmas, latent_image
             )
-        
-        # 分块时拒绝 denoise mask
-        if "noise_mask" in latent_image:
-            raise ValueError("LTXVUnlimitedSampler 分块时不支持 denoise mask")
         
         # 修复空 latent 通道
         fixed_latent = latent_image.copy()
@@ -293,7 +419,8 @@ class LTXVUnlimitedSampler:
             streams = samples.unbind()
             video, audio = streams
         
-        # 生成完整噪声
+        # Noise is generated on CPU by ComfyUI. Keeping the full deterministic noise on
+        # CPU preserves the standard seed sequence without increasing peak VRAM.
         full_noise = noise.generate_noise(fixed_latent)
         if hasattr(full_noise, 'is_nested') and full_noise.is_nested:
             video_noise, audio_noise = full_noise.unbind()
@@ -301,67 +428,105 @@ class LTXVUnlimitedSampler:
             video_noise = full_noise
             audio_noise = None
         
+        input_mask = latent_image.get("noise_mask")
+        if input_mask is not None and hasattr(input_mask, "is_nested") and input_mask.is_nested:
+            mask_streams = input_mask.unbind()
+            input_video_mask = mask_streams[0]
+            input_audio_mask = mask_streams[1] if len(mask_streams) > 1 else None
+        else:
+            input_video_mask = input_mask
+            input_audio_mask = None
+
+        original_conds = guider.original_conds
+
         # 收集输出
         output_video = []
         output_audio = []
         denoised_video = []
         denoised_audio = []
-        all_decoded_images = []  # 渐进式解码收集
         previous_video = None
         previous_audio = None
         chunk_infos = []
         
-        # 保存原始 guider 条件
-        original_conds = None
-        if hasattr(guider, 'original_conds'):
-            original_conds = copy.deepcopy(guider.original_conds)
-        
         # 开始预览执行
         preview_execution = begin_preview_execution(guider.model_patcher, len(chunks))
-        
+        representative = max(chunks, key=lambda item: (item.video_end - item.video_start) * video[0, 0, 0].numel() + (item.audio_end - item.audio_start) * (0 if audio is None else audio[0, 0, 0].numel()))
+        representative_video_noise = video_noise[:, :, representative.video_start:representative.video_end]
+        representative_conds = _conditioning_for_chunk(
+            original_conds,
+            representative.video_start,
+            representative.video_end,
+            video.shape[3] * video.shape[4],
+        )
+        if is_av_latent:
+            representative_audio_noise = audio_noise[:, :, representative.audio_start:representative.audio_end]
+            representative_noise = comfy.nested_tensor.NestedTensor((representative_video_noise, representative_audio_noise))
+        else:
+            representative_noise = representative_video_noise
+        prepared = _PreparedGuiderSession(guider, sampler, sigmas, representative_noise, representative_conds)
+        prepared_entered = False
+        cuda_stats = torch.cuda.is_available()
+        sampling_peak_allocated = 0
+        sampling_peak_reserved = 0
+        if cuda_stats:
+            torch.cuda.reset_peak_memory_stats()
+
         try:
+            prepared.__enter__()
+            prepared_entered = True
+            if cuda_stats:
+                prepare_peak_allocated = torch.cuda.max_memory_allocated()
+                prepare_peak_reserved = torch.cuda.max_memory_reserved()
+                sampling_peak_allocated = prepare_peak_allocated
+                sampling_peak_reserved = prepare_peak_reserved
+                if debug:
+                    logging.info(
+                        "CUDA model preparation peak: allocated=%.2f GiB reserved=%.2f GiB",
+                        prepare_peak_allocated / 1024 ** 3,
+                        prepare_peak_reserved / 1024 ** 3,
+                    )
             for chunk_idx, chunk in enumerate(chunks):
+                if cuda_stats:
+                    torch.cuda.reset_peak_memory_stats()
                 if debug:
                     logging.info(f"\n处理 Chunk {chunk_idx + 1}/{len(chunks)}")
+                    if torch.cuda.is_available():
+                        logging.info(
+                            "CUDA before chunk: allocated=%.2f GiB reserved=%.2f GiB",
+                            torch.cuda.memory_allocated() / 1024 ** 3,
+                            torch.cuda.memory_reserved() / 1024 ** 3,
+                        )
                 
                 # 准备分块 latent
                 vs, ve = chunk.video_start, chunk.video_end
                 aus, aue = chunk.audio_start, chunk.audio_end
                 
-                if is_av_latent:
-                    chunk_latent = comfy.nested_tensor.NestedTensor((
-                        video[:, :, vs:ve],
-                        audio[..., aus:aue],
-                    ))
-                    chunk_noise = comfy.nested_tensor.NestedTensor((
-                        video_noise[:, :, vs:ve],
-                        audio_noise[..., aus:aue],
-                    ))
-                else:
-                    chunk_latent = video[:, :, vs:ve].clone()
-                    chunk_noise = video_noise[:, :, vs:ve].clone()
-                
-                # 添加连续引导 (来自前一块)
+                chunk_video = video[:, :, vs:ve].clone()
+                chunk_video_noise = video_noise[:, :, vs:ve].clone()
+                video_mask = _slice_mask(input_video_mask, vs, ve, video)
                 if not chunk.is_first:
-                    # Video 引导: 拼接前一块末尾 latent
-                    overlap_video = previous_video[:, :, -chunk.overlap_video_steps:].clone()
-                    # Audio 引导: 拼接前一块末尾 audio
-                    overlap_audio = previous_audio[..., -chunk.context_audio_steps:].clone()
-                    
-                    chunk_latent_with_guide = comfy.nested_tensor.NestedTensor((
-                        torch.cat([overlap_video, video[:, :, vs:ve].clone()], dim=2),
-                        torch.cat([overlap_audio, audio[..., aus:aue].clone()], dim=-1),
-                    ))
-                    chunk_noise_with_guide = comfy.nested_tensor.NestedTensor((
-                        torch.cat([torch.zeros_like(overlap_video), video_noise[:, :, vs:ve].clone()], dim=2),
-                        torch.cat([torch.zeros_like(overlap_audio), audio_noise[..., aus:aue].clone()], dim=-1),
-                    ))
-                    chunk_latent = chunk_latent_with_guide
-                    chunk_noise = chunk_noise_with_guide
-                
-                # 构建 latent 字典
-                chunk_latent_dict = {"samples": chunk_latent}
-                
+                    video_context = previous_video[:, :, -chunk.overlap_video_steps:].to(chunk_video)
+                    chunk_video[:, :, :chunk.overlap_video_steps] = video_context
+                    chunk_video_noise[:, :, :chunk.overlap_video_steps] = 0
+                    video_mask[:, :, :chunk.overlap_video_steps] = 0
+
+                if is_av_latent:
+                    chunk_audio = audio[:, :, aus:aue].clone()
+                    chunk_audio_noise = audio_noise[:, :, aus:aue].clone()
+                    audio_mask = _slice_mask(input_audio_mask, aus, aue, audio)
+                    if not chunk.is_first and chunk.context_audio_steps:
+                        audio_context = previous_audio[:, :, -chunk.context_audio_steps:].to(chunk_audio)
+                        chunk_audio[:, :, :chunk.context_audio_steps] = audio_context
+                        chunk_audio_noise[:, :, :chunk.context_audio_steps] = 0
+                        audio_mask[:, :, :chunk.context_audio_steps] = 0
+                    chunk_latent = comfy.nested_tensor.NestedTensor((chunk_video, chunk_audio))
+                    chunk_noise = comfy.nested_tensor.NestedTensor((chunk_video_noise, chunk_audio_noise))
+                    noise_mask = comfy.nested_tensor.NestedTensor((video_mask, audio_mask))
+                else:
+                    chunk_latent = chunk_video
+                    chunk_noise = chunk_video_noise
+                    noise_mask = video_mask
+
                 # 设置预览分块
                 if preview_execution is not None:
                     preview_execution.set_chunk(
@@ -373,88 +538,95 @@ class LTXVUnlimitedSampler:
                         0 if chunk.is_first else chunk.overlap_video_steps,
                     )
                 
-                # 执行采样
+                chunk_conds = _conditioning_for_chunk(
+                    original_conds,
+                    vs,
+                    ve,
+                    chunk_video.shape[3] * chunk_video.shape[4],
+                )
+
                 try:
-                    result = comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
-                        noise=_FixedNoise((noise.seed + chunk_idx) & 0xffffffffffffffff, chunk_noise),
-                        guider=guider,
-                        sampler=sampler,
-                        sigmas=sigmas,
-                        latent_image=chunk_latent_dict,
+                    sampled, denoised = prepared.sample(
+                        chunk_noise,
+                        chunk_latent,
+                        noise_mask,
+                        chunk_conds,
+                        (noise.seed + chunk_idx) & 0xffffffffffffffff,
                     )
                 finally:
                     if preview_execution is not None:
                         preview_execution.clear_chunk()
-                
-                if hasattr(result, '_asdict'):
-                    output, denoised = result[0], result[1]
-                else:
-                    output, denoised = result[0], result[1]
-                
-                # 分离输出
+
                 if is_av_latent:
-                    out_video, out_audio = output["samples"].unbind()
-                    den_video, den_audio = denoised["samples"].unbind()
+                    out_video, out_audio = sampled.unbind()
+                    den_video, den_audio = denoised.unbind()
                 else:
-                    out_video = output["samples"]
+                    out_video = sampled
                     out_audio = None
-                    den_video = denoised["samples"]
+                    den_video = denoised
                     den_audio = None
                 
-                # 更新前一块引用
-                previous_video = out_video
-                previous_audio = out_audio
-                
-                # 移除引导部分
                 video_trim = 0 if chunk.is_first else chunk.overlap_video_steps
                 audio_trim = 0 if chunk.is_first else chunk.context_audio_steps
-                
-                output_video.append(out_video[:, :, video_trim:].clone())
+                previous_video = out_video[:, :, -max(1, chunk.overlap_video_steps):].detach().cpu()
+                previous_audio = None if out_audio is None else out_audio[:, :, -max(1, chunk.context_audio_steps):].detach().cpu()
+
+                output_video.append(out_video[:, :, video_trim:].detach().cpu())
                 if out_audio is not None:
-                    output_audio.append(out_audio[..., audio_trim:].clone())
-                denoised_video.append(den_video[:, :, video_trim:].clone())
+                    output_audio.append(out_audio[:, :, audio_trim:].detach().cpu())
+                denoised_video.append(den_video[:, :, video_trim:].detach().cpu())
                 if den_audio is not None:
-                    denoised_audio.append(den_audio[..., audio_trim:].clone())
-                
-                # 渐进式解码：每个 chunk 完成后立即解码
-                if progressive_decode and vae is not None:
-                    try:
-                        chunk_video = out_video[:, :, video_trim:].clone()
-                        images = vae.decode(chunk_video)
-                        if len(images.shape) == 5:
-                            images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
-                        all_decoded_images.append(images)
-                        
-                        if debug:
-                            logging.info(f"  渐进式解码: {images.shape}")
-                    except Exception as e:
-                        if debug:
-                            logging.warning(f"  渐进式解码失败: {e}")
+                    denoised_audio.append(den_audio[:, :, audio_trim:].detach().cpu())
                 
                 chunk_info = f"Chunk {chunk_idx + 1}/{len(chunks)}: " \
                            f"video [{chunk.video_start}, {chunk.video_end}), " \
                            f"audio [{chunk.audio_start}, {chunk.audio_end})"
                 chunk_infos.append(chunk_info)
                 
+                del sampled, denoised, out_video, den_video, chunk_latent, chunk_noise, noise_mask
+                if is_av_latent:
+                    del out_audio, den_audio, chunk_audio, chunk_audio_noise, audio_mask
+                del chunk_video, chunk_video_noise, video_mask
+
+                if cuda_stats:
+                    chunk_peak_allocated = torch.cuda.max_memory_allocated()
+                    chunk_peak_reserved = torch.cuda.max_memory_reserved()
+                    sampling_peak_allocated = max(sampling_peak_allocated, chunk_peak_allocated)
+                    sampling_peak_reserved = max(sampling_peak_reserved, chunk_peak_reserved)
                 if debug:
-                    logging.info(f"  输出 video 形状: {out_video[:, :, video_trim:].shape}")
+                    logging.info(f"  已完成并转移 Chunk {chunk_idx + 1} 到 CPU")
+                    if cuda_stats:
+                        logging.info(
+                            "CUDA chunk peak: allocated=%.2f GiB reserved=%.2f GiB; after: allocated=%.2f GiB reserved=%.2f GiB",
+                            chunk_peak_allocated / 1024 ** 3,
+                            chunk_peak_reserved / 1024 ** 3,
+                            torch.cuda.memory_allocated() / 1024 ** 3,
+                            torch.cuda.memory_reserved() / 1024 ** 3,
+                        )
         
         finally:
-            # 恢复原始 guider 条件
-            if original_conds is not None and hasattr(guider, 'original_conds'):
-                guider.original_conds = original_conds
-            # 关闭预览
+            if prepared_entered:
+                prepared.__exit__(None, None, None)
+            guider.original_conds = original_conds
             if preview_execution is not None:
                 preview_execution.close()
         
+        if cuda_stats:
+            sampling_summary = (
+                f"Sampling CUDA peak: allocated={sampling_peak_allocated / 1024 ** 3:.2f} GiB, "
+                f"reserved={sampling_peak_reserved / 1024 ** 3:.2f} GiB"
+            )
+            chunk_infos.append(sampling_summary)
+            logging.info(sampling_summary)
+
         # 组装最终输出
         final_video = torch.cat(output_video, dim=2)
         if is_av_latent and output_audio:
-            final_audio = torch.cat(output_audio, dim=-1)
+            final_audio = torch.cat(output_audio, dim=2)
             final_output_samples = comfy.nested_tensor.NestedTensor((final_video, final_audio))
             final_denoised_samples = comfy.nested_tensor.NestedTensor((
                 torch.cat(denoised_video, dim=2),
-                torch.cat(denoised_audio, dim=-1),
+                torch.cat(denoised_audio, dim=2),
             ))
         else:
             final_output_samples = final_video
@@ -472,11 +644,50 @@ class LTXVUnlimitedSampler:
             logging.info(f"\n最终输出形状: {final_output_samples.shape}")
             logging.info("=" * 60)
         
-        # 拼接渐进式解码的图像
-        if progressive_decode and all_decoded_images:
-            progressive_images = torch.cat(all_decoded_images, dim=0)
+        if progressive_decode and vae is not None:
+            # Sampling is complete and all retained latents are on CPU. Explicitly unload
+            # LTXAV before loading the VideoVAE; normal guider cleanup leaves the model in
+            # ComfyUI's loaded-model pool for reuse, which makes the two models compete for VRAM.
+            comfy.model_management.unload_model_and_clones(guider.model_patcher, all_devices=True)
+            comfy.model_management.soft_empty_cache()
+            if cuda_stats:
+                logging.info(
+                    "CUDA before VAE load: allocated=%.2f GiB reserved=%.2f GiB",
+                    torch.cuda.memory_allocated() / 1024 ** 3,
+                    torch.cuda.memory_reserved() / 1024 ** 3,
+                )
+                torch.cuda.reset_peak_memory_stats()
+            compression = vae.spacial_compression_decode()
+            tile = max(1, vae_tile_size // compression)
+            overlap = min(tile - 1, max(1, min(64, vae_tile_size // 4) // compression))
+            decode_video = final_denoised_samples.unbind()[0] if is_av_latent else final_denoised_samples
+            original_vae_output_device = vae.output_device
+            try:
+                # decode_tiled accumulates the complete decoded video on output_device.
+                # Force that accumulator to CPU so only the VAE model and current tile use VRAM.
+                vae.output_device = torch.device("cpu")
+                progressive_images = vae.decode_tiled(
+                    decode_video,
+                    tile_x=tile,
+                    tile_y=tile,
+                    overlap=overlap,
+                    tile_t=vae_temporal_size,
+                    overlap_t=1,
+                )
+            finally:
+                vae.output_device = original_vae_output_device
+            if progressive_images.ndim == 5:
+                progressive_images = progressive_images.flatten(0, 1)
+            progressive_images = progressive_images.detach().cpu()
+            if cuda_stats:
+                vae_summary = (
+                    f"VAE CUDA peak: allocated={torch.cuda.max_memory_allocated() / 1024 ** 3:.2f} GiB, "
+                    f"reserved={torch.cuda.max_memory_reserved() / 1024 ** 3:.2f} GiB"
+                )
+                chunk_infos.append(vae_summary)
+                logging.info(vae_summary)
         else:
-            progressive_images = torch.zeros(1, 256, 256, 3)  # 空图像占位
+            progressive_images = torch.zeros(1, 256, 256, 3, device="cpu")
         
         return (final_output, final_denoised, progressive_images, "\n".join(chunk_infos))
     
