@@ -17,8 +17,10 @@ from dataclasses import dataclass
 import torch
 
 import comfy
-import comfy.sample
+import comfy.patcher_extension
 import comfy_extras.nodes_custom_sampler
+
+from .preview import begin_preview_execution, PREVIEW_WRAPPER_KEY
 
 
 # ============================================================================
@@ -329,6 +331,9 @@ class LTXVUnlimitedSampler:
         if hasattr(guider, 'original_conds'):
             original_conds = copy.deepcopy(guider.original_conds)
         
+        # 开始预览执行
+        preview_execution = begin_preview_execution(guider.model_patcher, len(chunks))
+        
         try:
             for chunk_idx, chunk in enumerate(chunks):
                 if debug:
@@ -342,10 +347,11 @@ class LTXVUnlimitedSampler:
                 
                 # 如果不是第一个分块，需要添加重叠引导
                 # 核心机制：将前一块的输出作为引导拼接到当前块
-                if not chunk.is_first and chunk.overlap_latent_steps > 0:
+                overlap_latent_steps = chunk.overlap_latent_steps
+                if not chunk.is_first and overlap_latent_steps > 0:
                     # 从前一分块的输出中获取重叠部分
                     prev_output = output_frames[-1]
-                    overlap_start_idx = prev_output.shape[2] - chunk.overlap_latent_steps
+                    overlap_start_idx = prev_output.shape[2] - overlap_latent_steps
                     overlap_latent = prev_output[:, :, overlap_start_idx:].clone()
                     
                     if debug:
@@ -367,14 +373,29 @@ class LTXVUnlimitedSampler:
                     "samples": chunk_latent,
                 }
                 
+                # 设置预览分块
+                if preview_execution is not None:
+                    preview_execution.set_chunk(
+                        chunk_idx,
+                        chunk.latent_start,
+                        chunk.latent_end - 1,
+                        chunk.latent_start + overlap_latent_steps,
+                        chunk.latent_end - 1,
+                        overlap_latent_steps,
+                    )
+                
                 # 执行采样
-                result = comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
-                    noise=_FixedNoise(noise.seed + chunk_idx, chunk_noise),
-                    guider=guider,
-                    sampler=sampler,
-                    sigmas=sigmas,
-                    latent_image=chunk_latent_dict,
-                )
+                try:
+                    result = comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
+                        noise=_FixedNoise(noise.seed + chunk_idx, chunk_noise),
+                        guider=guider,
+                        sampler=sampler,
+                        sigmas=sigmas,
+                        latent_image=chunk_latent_dict,
+                    )
+                finally:
+                    if preview_execution is not None:
+                        preview_execution.clear_chunk()
                 
                 if hasattr(result, '_asdict'):
                     output, denoised = result[0], result[1]
@@ -409,6 +430,9 @@ class LTXVUnlimitedSampler:
             # 恢复原始 guider 条件
             if original_conds is not None and hasattr(guider, 'original_conds'):
                 guider.original_conds = original_conds
+            # 关闭预览
+            if preview_execution is not None:
+                preview_execution.close()
         
         # 拼接所有分块输出
         final_output_samples = torch.cat(output_frames, dim=2)
@@ -463,13 +487,71 @@ def get_chunk_preview_frames(
 
 
 # ============================================================================
+# 预览节点
+# ============================================================================
+
+from comfy_api.latest import io
+import folder_paths
+
+
+class LTXVUnlimitedPreview(io.ComfyNode):
+    """
+    LTX Video Unlimited Preview - 实时预览节点
+    
+    在分块采样过程中实时预览生成的视频。
+    使用 Latent2RGB 或 Tiny VAE 解码预览帧。
+    """
+    
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="LTXVUnlimitedPreview",
+            display_name="LTX Video Unlimited Preview",
+            category="video/split",
+            description="在分块采样过程中实时预览 LTX Video 输出。支持 Latent2RGB 和 Tiny VAE 解码模式。",
+            inputs=[
+                io.Model.Input("model"),
+                io.Int.Input("max_resolution", default=512, min=64, max=2048, step=64,
+                            tooltip="预览最大分辨率"),
+                io.Int.Input("quality", default=75, min=30, max=100, step=1,
+                            tooltip="WebP 编码质量"),
+                io.Float.Input("fps", default=24.0, min=1.0, max=60.0, step=0.001,
+                            tooltip="预览帧率"),
+                io.Int.Input("frame_stride", default=1, min=1, max=16, step=1,
+                            tooltip="预览间隔（每 N 帧预览一次）"),
+                io.Combo.Input("tiny_vae", 
+                             options=["none"] + folder_paths.get_filename_list("vae_approx"), 
+                             default="none",
+                             tooltip="可选的 Tiny VAE 解码器。None 使用 Latent2RGB。"),
+            ],
+            outputs=[io.Model.Output()],
+            hidden=[io.Hidden.unique_id],
+            is_experimental=True,
+        )
+    
+    @classmethod
+    def execute(cls, model, max_resolution, quality, fps, frame_stride, tiny_vae="none"):
+        from .preview import _AccumulatedPreviewWrapper, PREVIEW_WRAPPER_KEY
+        
+        patched = model.clone()
+        patched.add_wrapper_with_key(
+            comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
+            PREVIEW_WRAPPER_KEY,
+            _AccumulatedPreviewWrapper(cls.hidden.unique_id, max_resolution, quality, fps, frame_stride, tiny_vae),
+        )
+        return io.NodeOutput(patched)
+
+
+# ============================================================================
 # 节点映射
 # ============================================================================
 
 LTXV_NODE_CLASS_MAPPINGS = {
     "LTXVUnlimitedSampler": LTXVUnlimitedSampler,
+    "LTXVUnlimitedPreview": LTXVUnlimitedPreview,
 }
 
 LTXV_NODE_DISPLAY_NAME_MAPPINGS = {
     "LTXVUnlimitedSampler": "LTX Video Sampler Unlimited",
+    "LTXVUnlimitedPreview": "LTX Video Unlimited Preview",
 }
