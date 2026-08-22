@@ -88,12 +88,13 @@ def _chunk_plan(video_t, audio_t, chunk_frames, time_scale_factor=8):
     overlap_video_steps = 1
     plan = []
     video_end = 0
+    previous_audio_end = 0
     while video_end < video_t:
         video_start = 0 if not plan else video_end - overlap_video_steps
         next_video_end = min(video_start + max_chunk_t, video_t)
         audio_start = round(video_start * audio_t / video_t) if audio_t else 0
         audio_end = round(next_video_end * audio_t / video_t) if audio_t else 0
-        context_audio_steps = 0 if not plan else round(overlap_video_steps * audio_t / video_t)
+        context_audio_steps = 0 if not plan else previous_audio_end - audio_start
         frame_start = 0 if not plan else latent_steps_to_pixel_frames(video_start)
         frame_end = latent_steps_to_pixel_frames(next_video_end)
         plan.append(ChunkPlan(
@@ -109,6 +110,7 @@ def _chunk_plan(video_t, audio_t, chunk_frames, time_scale_factor=8):
             context_audio_steps=context_audio_steps,
         ))
         video_end = next_video_end
+        previous_audio_end = audio_end
 
     return plan
 
@@ -369,6 +371,8 @@ class LTXVUnlimitedSampler:
             if len(streams) != 2:
                 raise ValueError(f"LTX AV latent expected 2 streams (video, audio), got {len(streams)}")
             video, audio = streams
+            if audio.shape[2] == 0:
+                raise ValueError("LTX AV audio latent has no time steps. Use the video-only latent for video redraw, or provide a non-empty LTX Audio latent.")
         else:
             # 纯视频 latent
             video = samples
@@ -398,12 +402,6 @@ class LTXVUnlimitedSampler:
                 logging.info(f"  Chunk {chunk.chunk_index}: video [{chunk.video_start}, {chunk.video_end}), "
                            f"audio [{chunk.audio_start}, {chunk.audio_end})")
         
-        # 单块直接委托
-        if len(chunks) == 1:
-            return comfy_extras.nodes_custom_sampler.SamplerCustomAdvanced.execute(
-                noise, guider, sampler, sigmas, latent_image
-            )
-        
         # 修复空 latent 通道
         fixed_latent = latent_image.copy()
         fixed_latent["samples"] = comfy.sample.fix_empty_latent_channels(
@@ -418,6 +416,11 @@ class LTXVUnlimitedSampler:
         if hasattr(samples, 'is_nested') and samples.is_nested:
             streams = samples.unbind()
             video, audio = streams
+            if audio.shape[2] == 0:
+                raise ValueError(
+                    "LTX AV audio latent has no time steps after latent preparation. "
+                    "Set LTXV Empty Latent Audio.frames_number to the segment length (161 by default), not 0."
+                )
         
         # Noise is generated on CPU by ComfyUI. Keeping the full deterministic noise on
         # CPU preserves the standard seed sequence without increasing peak VRAM.
