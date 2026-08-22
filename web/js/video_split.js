@@ -74,6 +74,34 @@ const helpTexts = {
     "FrameDeduplicate": {
         "en": "Remove duplicate/similar frames\n\n**Inputs:**\n- images: Frame tensor\n- threshold: Similarity threshold\n\n**Outputs:**\n- deduplicated_images: Deduplicated frames\n- frame_count: Frame count",
         "zh": "帧去重\n\n**输入:**\n- images: 帧张量\n- threshold: 相似度阈值\n\n**输出:**\n- deduplicated_images: 去重后的帧\n- frame_count: 帧数"
+    },
+    "LTXVUnlimitedSampler": {
+        "en": "Sample long LTX Video in temporal chunks to reduce peak VRAM. Later chunks retain prior output as context for continuity.\n\n**Inputs:**\n- noise / guider / sampler / sigmas: Standard advanced sampling inputs\n- latent_image: LTX video latent, or LTX AV nested latent\n- chunk_frames: Maximum pixel frames per chunk; internally aligned to 8n+1\n- vae + progressive_decode: Optional tiled CPU decode after sampling\n\n**Outputs:**\n- output: Sampled latent\n- denoised_output: Latent for LTX Decode To Video Segment\n- progressive_images: Optional decoded preview\n- chunk_info: Chunk and memory information",
+        "zh": "按时间块采样长 LTX Video，降低峰值显存；后续块会保留上一块输出作为上下文以维持连续性。\n\n**输入:**\n- noise / guider / sampler / sigmas: 标准高级采样输入\n- latent_image: LTX 视频 latent，或 LTX AV NestedTensor latent\n- chunk_frames: 每块最大像素帧数；内部会对齐到 8n+1\n- vae + progressive_decode: 可选，采样后以 tiled VAE 解码到 CPU\n\n**输出:**\n- output: 采样后的 latent\n- denoised_output: 供 LTX Decode To Video Segment 使用的 latent\n- progressive_images: 可选的解码预览\n- chunk_info: 分块和显存信息"
+    },
+    "LTXVUnlimitedPreview": {
+        "en": "Add a live preview wrapper for LTX Video chunk sampling. Connect its MODEL output to the guider/model path used by LTX Video Sampler Unlimited.\n\n**Inputs:**\n- model: Model to wrap\n- max_resolution: Preview resolution cap\n- quality: JPEG preview quality\n- fps: Preview frame rate\n- frame_stride: Preview every Nth frame\n- tiny_vae: Optional approximate VAE\n\n**Output:**\n- model: Preview-enabled model",
+        "zh": "为 LTX Video 分块采样添加实时预览包装。将输出 MODEL 接到 LTX Video Sampler Unlimited 所用的 guider/model 路径。\n\n**输入:**\n- model: 要包装的模型\n- max_resolution: 预览分辨率上限\n- quality: JPEG 预览质量\n- fps: 预览帧率\n- frame_stride: 每隔 N 帧预览一帧\n- tiny_vae: 可选的近似 VAE\n\n**输出:**\n- model: 已启用预览的模型"
+    },
+    "LTXVVideoSegmentInfo": {
+        "en": "Plan overlapping LTX-compatible video segments for a loop. Segment and overlap lengths are aligned to 8n+1.\n\n**Inputs:**\n- images: Source video frames\n- fps: Source frame rate\n- segment_duration: Requested duration per segment\n- overlap_frames: Shared frames between adjacent segments\n\n**Outputs:**\n- total_segments: Connect to the loop total\n- total_frames: Source frame count\n- frames_per_segment: Connect to LTX Get Video Segment",
+        "zh": "为循环规划带重叠、兼容 LTX 的视频分段。分段长度和重叠长度会对齐到 8n+1。\n\n**输入:**\n- images: 源视频帧\n- fps: 源帧率\n- segment_duration: 每段的目标时长\n- overlap_frames: 相邻分段共享的帧数\n\n**输出:**\n- total_segments: 连接循环总次数\n- total_frames: 源视频总帧数\n- frames_per_segment: 连接 LTX Get Video Segment"
+    },
+    "LTXVGetVideoSegment": {
+        "en": "Extract one overlapping LTX-compatible video segment for the current loop iteration. The final segment is padded with its last frame; use segment_frame_count to remove that padding later.\n\n**Inputs:**\n- images: Same source used by LTX Video Segment Info\n- segment_index: Current zero-based loop index\n- frames_per_segment: From LTX Video Segment Info\n- overlap_frames: Must match the segment-info and collection nodes\n\n**Outputs:**\n- segment_images: Fixed-length segment\n- segment_frame_count: Real frame count before final-segment padding\n- start_frame: Source start-frame index",
+        "zh": "为当前循环提取一个带重叠、兼容 LTX 的视频段。最后一段会用末帧补齐；后续需用 segment_frame_count 移除补帧。\n\n**输入:**\n- images: 与 LTX Video Segment Info 相同的源视频\n- segment_index: 当前循环索引，从 0 开始\n- frames_per_segment: 来自 LTX Video Segment Info\n- overlap_frames: 必须与分段信息和收集节点一致\n\n**输出:**\n- segment_images: 固定长度的视频段\n- segment_frame_count: 末段补齐前的真实帧数\n- start_frame: 在源视频中的起始帧索引"
+    },
+    "LTXVDecodeToVideoSegment": {
+        "en": "Decode one LTX denoised video-latent segment directly to a temporary MP4 to avoid retaining full decoded video in memory. In a loop, feed segments back through the loop feedback.\n\n**Inputs:**\n- latent: LTX Video Sampler Unlimited denoised_output\n- video_vae: Matching LTX Video VAE\n- fps / quality: Output encoding settings; keep unchanged in the loop\n- overlap_frames: Duplicate frames removed from each segment after the first\n- valid_frames: From LTX Get Video Segment to remove final-segment padding\n- segments: Previous loop feedback\n\n**Outputs:**\n- segments: Connect to loop feedback\n- total_frames: Accumulated final frame count",
+        "zh": "将一个 LTX 去噪视频 latent 段直接解码为临时 MP4，避免在内存中保留完整解码视频。循环中需将 segments 回接到循环反馈。\n\n**输入:**\n- latent: LTX Video Sampler Unlimited 的 denoised_output\n- video_vae: 匹配的 LTX Video VAE\n- fps / quality: 输出编码设置；循环中必须保持不变\n- overlap_frames: 从第二段开始丢弃的重复帧数\n- valid_frames: 来自 LTX Get Video Segment，用于移除末段补帧\n- segments: 上一次循环反馈\n\n**输出:**\n- segments: 连接循环反馈\n- total_frames: 累计的最终帧数"
+    },
+    "ImageCollectLowMemoryVideo": {
+        "en": "Encode and collect one processed IMAGE segment per loop directly to temporary MP4 files. This is the low-memory alternative when the loop produces images rather than LTX latents.\n\n**Inputs:**\n- new_images: One processed IMAGE segment for this iteration\n- fps / quality: Output encoding settings; keep unchanged in the loop\n- overlap_frames: Frames to discard at the start of segments after the first\n- valid_frames: Optional real frame count to remove final-segment padding\n- segments: Previous loop feedback\n\n**Outputs:**\n- segments: Connect to loop feedback\n- total_frames: Accumulated final frame count",
+        "zh": "循环中将一个处理后的 IMAGE 段直接编码并收集为临时 MP4，避免累积全部图像帧。适用于循环输出图像而非 LTX latent 的路径。\n\n**输入:**\n- new_images: 当前迭代的一个处理后 IMAGE 段\n- fps / quality: 输出编码设置；循环中必须保持不变\n- overlap_frames: 从第二段开始丢弃的开头重复帧数\n- valid_frames: 可选的真实帧数，用于移除末段补帧\n- segments: 上一次循环反馈\n\n**输出:**\n- segments: 连接循环反馈\n- total_frames: 累计的最终帧数"
+    },
+    "FinalVideoSave": {
+        "en": "Concatenate low-memory collected MP4 segments and save the final H.264 video. Add the original full audio optionally; segment collection has already removed overlap frames.\n\n**Inputs:**\n- segments: Final feedback value from the loop\n- filename_prefix: Output path and filename prefix\n- audio: Optional full audio track\n\n**Output:**\n- saved_path: Final MP4 path",
+        "zh": "拼接低内存收集的 MP4 分段并保存最终 H.264 视频。可选接入原始完整音频；分段收集阶段已移除重叠帧。\n\n**输入:**\n- segments: 循环结束时的最终反馈值\n- filename_prefix: 输出路径和文件名前缀\n- audio: 可选的完整音轨\n\n**输出:**\n- saved_path: 最终 MP4 路径"
     }
 };
 
@@ -86,7 +114,11 @@ const HELP_NODES = new Set([
     // 剪映功能节点
     "VideoReverse", "VideoResample", "VideoSampleFrames",
     "VideoTimeRemap", "VideoConcat", "VideoFade",
-    "VideoOverlay", "FrameInterpolate", "FrameDeduplicate"
+    "VideoOverlay", "FrameInterpolate", "FrameDeduplicate",
+    // LTX 长视频分块与低内存保存节点
+    "LTXVUnlimitedSampler", "LTXVUnlimitedPreview",
+    "LTXVVideoSegmentInfo", "LTXVGetVideoSegment",
+    "LTXVDecodeToVideoSegment", "ImageCollectLowMemoryVideo", "FinalVideoSave"
 ]);
 const nodeDescriptions = new Map();
 
