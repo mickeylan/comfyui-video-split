@@ -18,6 +18,10 @@ from .audio_nodes import _parts
 COLLECTION_TYPE = "VIDEO_SEGMENT_COLLECTION"
 
 
+def _ltx_overlap_frames(overlap_frames):
+    return max(1, ((int(overlap_frames) - 1) // 8) * 8 + 1)
+
+
 def _ffmpeg_path():
     path = shutil.which("ffmpeg")
     if path is not None:
@@ -97,7 +101,7 @@ class LTXVVideoSegmentInfo:
         total_frames = images.shape[0]
         requested = round(segment_duration * fps)
         frames_per_segment = max(9, ((requested - 1) // 8) * 8 + 1)
-        overlap = max(1, ((overlap_frames - 1) // 8) * 8 + 1)
+        overlap = _ltx_overlap_frames(overlap_frames)
         if overlap >= frames_per_segment:
             raise ValueError(f"LTX overlap ({overlap}) must be smaller than segment length ({frames_per_segment})")
         stride = frames_per_segment - overlap
@@ -121,7 +125,7 @@ class LTXVGetVideoSegment:
     CATEGORY = "video/split"
 
     def execute(self, images, segment_index, frames_per_segment, overlap_frames):
-        overlap = max(1, ((overlap_frames - 1) // 8) * 8 + 1)
+        overlap = _ltx_overlap_frames(overlap_frames)
         if overlap >= frames_per_segment:
             raise ValueError(f"LTX overlap ({overlap}) must be smaller than segment length ({frames_per_segment})")
         start_frame = segment_index * (frames_per_segment - overlap)
@@ -196,11 +200,11 @@ class LTXVDecodeToVideoSegment:
             session_dir = os.path.join(folder_paths.get_temp_directory(), "video_segment_collection", uuid.uuid4().hex)
             os.makedirs(session_dir, exist_ok=False)
             segments = {"session_dir": session_dir, "paths": [], "fps": float(fps), "quality": quality,
-                        "overlap_frames": int(overlap_frames), "width": None, "height": None, "total_frames": 0}
+                        "overlap_frames": _ltx_overlap_frames(overlap_frames), "width": None, "height": None, "total_frames": 0}
         else:
             segments = dict(segments)
             segments["paths"] = list(segments["paths"])
-            if float(fps) != segments["fps"] or quality != segments["quality"] or int(overlap_frames) != segments["overlap_frames"]:
+            if float(fps) != segments["fps"] or quality != segments["quality"] or _ltx_overlap_frames(overlap_frames) != segments["overlap_frames"]:
                 raise ValueError("fps, quality, and overlap_frames must stay unchanged during the loop")
 
         temp_dir = os.path.join(segments["session_dir"], f"decode_{len(segments['paths']):06}")
@@ -260,7 +264,7 @@ class LTXVDecodeToVideoSegment:
                         break
                     latent_start = latent_end - 1
 
-            skip_frames = int(overlap_frames) if segments["paths"] else 0
+            skip_frames = _ltx_overlap_frames(overlap_frames) if segments["paths"] else 0
             if skip_frames >= valid_frames:
                 raise ValueError(f"overlap_frames ({skip_frames}) removes all {valid_frames} valid frames")
             crf = {"高画质": "17", "标准": "20", "省空间": "24"}[quality]
@@ -348,7 +352,7 @@ class ImageCollectLowMemoryVideo:
         else:
             segments = dict(segments)
             segments["paths"] = list(segments["paths"])
-            if float(fps) != segments["fps"] or quality != segments["quality"] or int(overlap_frames) != segments["overlap_frames"]:
+            if float(fps) != segments["fps"] or quality != segments["quality"] or _ltx_overlap_frames(overlap_frames) != segments["overlap_frames"]:
                 raise ValueError("fps, quality, and overlap_frames must stay unchanged during the loop")
 
         index = len(segments["paths"])
@@ -432,6 +436,7 @@ class FinalVideoSave(io.ComfyNode):
                 os.remove(final_path)
             raise
 
+        shutil.rmtree(session_dir, ignore_errors=True)
         return io.NodeOutput(final_path, ui=ui.PreviewVideo([ui.SavedResult(file, subfolder, io.FolderType.output)]))
 
 
