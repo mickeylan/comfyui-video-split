@@ -102,6 +102,14 @@ const helpTexts = {
     "FinalVideoSave": {
         "en": "Concatenate low-memory collected MP4 segments and save the final H.264 video. Add the original full audio optionally; segment collection has already removed overlap frames.\n\n**Inputs:**\n- segments: Final feedback value from the loop\n- filename_prefix: Output path and filename prefix\n- audio: Optional full audio track\n\n**Output:**\n- saved_path: Final MP4 path",
         "zh": "拼接低内存收集的 MP4 分段并保存最终 H.264 视频。可选接入原始完整音频；分段收集阶段已移除重叠帧。\n\n**输入:**\n- segments: 循环结束时的最终反馈值\n- filename_prefix: 输出路径和文件名前缀\n- audio: 可选的完整音轨\n\n**输出:**\n- saved_path: 最终 MP4 路径"
+    },
+    "Wan22UnlimitedSampler": {
+        "en": "Sample long Wan 2.2 / Bernini video in temporal chunks to reduce peak VRAM. Built for 720p on 12GB GPU.\n\n**Inputs:**\n- noise / guider / sampler / sigmas: Standard advanced sampling inputs\n- latent_image: Wan22 video latent (48 channels, 16x spatial compression)\n- chunk_frames: Max pixel frames per chunk (default 128); aligned to 1+4N\n- overlap_frames: Overlap pixel frames for continuity (default 8 = 2 latent steps)\n- vae + progressive_decode: Optional tiled CPU decode after sampling\n\n**Outputs:**\n- output: Sampled latent\n- denoised_output: Latent for VAE decode\n- progressive_images: Optional decoded preview\n- chunk_info: Chunk statistics and VRAM peak info\n\n**Recommended settings for 12GB VRAM:**\n- 720p (1280x720): chunk_frames=128, overlap_frames=8\n- 540p (960x540): chunk_frames=256, overlap_frames=8",
+        "zh": "按时间块采样长 Wan 2.2 / Bernini 视频，降低峰值显存。专为 12GB 显存 720p 设计。\n\n**输入:**\n- noise / guider / sampler / sigmas: 标准高级采样输入\n- latent_image: Wan22 视频 latent（48 通道，16× 空间压缩）\n- chunk_frames: 每块最大像素帧数（默认 128）；对齐到 1+4N\n- overlap_frames: 重叠像素帧数用于连续性（默认 8 = 2 latent 步）\n- vae + progressive_decode: 可选，采样后以 tiled VAE 解码到 CPU\n\n**输出:**\n- output: 采样后的 latent\n- denoised_output: 供 VAE 解码的 latent\n- progressive_images: 可选的解码预览\n- chunk_info: 分块统计和显存峰值信息\n\n**12GB 显存推荐设置:**\n- 720p (1280x720): chunk_frames=128, overlap_frames=8\n- 540p (960x540): chunk_frames=256, overlap_frames=8"
+    },
+    "Wan22UnlimitedPreview": {
+        "en": "Add a live preview wrapper for Wan22 chunk sampling. Connect its MODEL output to the guider/model path used by Wan22 Sampler Unlimited.\n\n**Inputs:**\n- model: Model to wrap\n- max_resolution: Preview resolution cap\n- quality: JPEG preview quality\n- fps: Preview frame rate\n- frame_stride: Preview every Nth latent step (default 4)\n- tiny_vae: TAESD decoder (default lighttaew2_2)\n\n**Output:**\n- model: Preview-enabled model",
+        "zh": "为 Wan22 分块采样添加实时预览包装。将输出 MODEL 接到 Wan22 Sampler Unlimited 所用的 guider/model 路径。\n\n**输入:**\n- model: 要包装的模型\n- max_resolution: 预览分辨率上限\n- quality: JPEG 预览质量\n- fps: 预览帧率\n- frame_stride: 每隔 N 个 latent 步预览一帧（默认 4）\n- tiny_vae: TAESD 解码器（默认 lighttaew2_2）\n\n**输出:**\n- model: 已启用预览的模型"
     }
 };
 
@@ -118,7 +126,9 @@ const HELP_NODES = new Set([
     // LTX 长视频分块与低内存保存节点
     "LTXVUnlimitedSampler", "LTXVUnlimitedPreview",
     "LTXVVideoSegmentInfo", "LTXVGetVideoSegment",
-    "LTXVDecodeToVideoSegment", "ImageCollectLowMemoryVideo", "FinalVideoSave"
+    "LTXVDecodeToVideoSegment", "ImageCollectLowMemoryVideo", "FinalVideoSave",
+    // Wan22 / Bernini 分块采样节点
+    "Wan22UnlimitedSampler", "Wan22UnlimitedPreview"
 ]);
 const nodeDescriptions = new Map();
 

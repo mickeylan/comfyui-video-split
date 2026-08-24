@@ -29,8 +29,12 @@ except ImportError:
 
 
 PREVIEW_WRAPPER_KEY = "ltxv_unlimited_preview"
+WAN22_PREVIEW_WRAPPER_KEY = "wan22_unlimited_preview"
+
 # LTX Video 帧结构: 每个 latent 步 = 8 像素帧
-FRAME_PER_TOKEN = (8,) * 4  # 每个 latent 步对应 8 帧
+LTX_FRAME_PER_TOKEN = (8,) * 4
+# Wan22 帧结构: 每个 latent 步 = 4 像素帧
+WAN22_FRAME_PER_TOKEN = (4,) * 4
 
 
 class _LatestEncoder:
@@ -170,18 +174,23 @@ def _latent_rgb_frames(video, latent_format, indices, max_resolution):
 def _tiny_frames(video, decoder, indices, max_resolution):
     """使用 Tiny VAE 解码预览"""
     if decoder.latent_channels != video.shape[1]:
-        raise ValueError(f"tiny VAE expects {decoder.latent_channels} latent channels, but LTX Video uses {video.shape[1]}")
+        raise ValueError(f"tiny VAE expects {decoder.latent_channels} latent channels, but video uses {video.shape[1]}")
     return [_tensor_image(decoder.decode_frame(video[0, :, index].unsqueeze(0)), max_resolution) for index in indices]
 
 
-def _frame_selection(video_t, trim_steps, stride, fps):
-    """选择预览帧"""
+def _frame_selection(video_t, trim_steps, stride, fps, frame_per_token=None):
+    """选择预览帧
+    
+    Args:
+        frame_per_token: 每个 latent 步对应的像素帧数列表，默认 LTX (8)。
+    """
+    if frame_per_token is None:
+        frame_per_token = LTX_FRAME_PER_TOKEN
     indices = list(range(trim_steps, video_t, stride))
     durations = []
     preview_frames = 0
     for index in indices:
-        # LTX: 每个 latent 步 = 8 像素帧
-        span = sum(FRAME_PER_TOKEN[position % len(FRAME_PER_TOKEN)] for position in range(index, min(video_t, index + stride)))
+        span = sum(frame_per_token[position % len(frame_per_token)] for position in range(index, min(video_t, index + stride)))
         next_preview_frames = preview_frames + span
         durations.append(max(1, round(next_preview_frames * 1000.0 / fps) - round(preview_frames * 1000.0 / fps)))
         preview_frames = next_preview_frames
@@ -206,13 +215,13 @@ def _encode_webp(frames, durations, quality):
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def _send(payload):
+def _send(payload, event_key=None):
     """发送 WebSocket 事件"""
     if PromptServer is not None and PromptServer.instance is not None:
         try:
-            PromptServer.instance.send_sync("ltxv_unlimited_preview", payload, PromptServer.instance.client_id)
+            PromptServer.instance.send_sync(event_key or PREVIEW_WRAPPER_KEY, payload, PromptServer.instance.client_id)
         except Exception as error:
-            logging.warning(f"LTX Video preview could not send update: {error}")
+            logging.warning(f"Preview could not send update: {error}")
 
 
 class _PreviewExecution:
@@ -233,26 +242,39 @@ class _PreviewExecution:
             wrapper.finish(execution_id)
 
 
-def begin_preview_execution(model_patcher, chunk_count):
-    """开始预览执行"""
-    wrappers = model_patcher.get_wrappers(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE, PREVIEW_WRAPPER_KEY)
+def begin_preview_execution(model_patcher, chunk_count, wrapper_key=None):
+    """开始预览执行
+
+    Args:
+        wrapper_key: 预览包装器键，默认 ltxv_unlimited_preview。
+    """
+    wrappers = model_patcher.get_wrappers(
+        comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
+        wrapper_key or PREVIEW_WRAPPER_KEY,
+    )
     return _PreviewExecution(wrappers, chunk_count) if wrappers else None
 
 
 class _AccumulatedPreviewWrapper:
-    """累积预览包装器"""
-    def __init__(self, node_id, max_resolution, quality, fps, frame_stride, tiny_vae):
+    """累积预览包装器，支持 LTX 和 Wan22"""
+
+    def __init__(self, node_id, max_resolution, quality, fps, frame_stride, tiny_vae,
+                 temporal_ratio=8, taesd_name=None, wrapper_key=None):
         self.node_id = str(node_id) if node_id is not None else None
         self.max_resolution = max_resolution
         self.quality = quality
         self.fps = fps
         self.frame_stride = frame_stride
         self.tiny_vae_name = tiny_vae
+        self.temporal_ratio = temporal_ratio
+        self.taesd_name = taesd_name
+        self.wrapper_key = wrapper_key or PREVIEW_WRAPPER_KEY
         self.execution_id = 0
         self.chunk_count = 0
         self.current_chunk = None
         self.decoder = None
         self.decoder_failed = False
+        self._frame_per_token = tuple([temporal_ratio] * 4)
 
     def begin(self, chunk_count):
         self.execution_id += 1
@@ -260,7 +282,7 @@ class _AccumulatedPreviewWrapper:
         self.current_chunk = None
         self.decoder = None
         self.decoder_failed = False
-        _send({"node_id": self.node_id, "action": "reset", "execution": self.execution_id, "chunk_count": chunk_count})
+        _send({"node_id": self.node_id, "action": "reset", "execution": self.execution_id, "chunk_count": chunk_count}, self.wrapper_key)
         return self.execution_id
 
     def set_chunk(self, execution_id, index, sampled_start, sampled_end, output_start, output_end, trim_steps):
@@ -281,7 +303,7 @@ class _AccumulatedPreviewWrapper:
     def finish(self, execution_id):
         if execution_id != self.execution_id:
             return
-        _send({"node_id": self.node_id, "action": "complete", "execution": execution_id})
+        _send({"node_id": self.node_id, "action": "complete", "execution": execution_id}, self.wrapper_key)
         self.current_chunk = None
         self.decoder = None
 
@@ -292,7 +314,7 @@ class _AccumulatedPreviewWrapper:
             try:
                 self.decoder = _TinyDecoder(self.tiny_vae_name)
             except Exception as error:
-                logging.warning(f"LTX Video preview could not load '{self.tiny_vae_name}', using Latent2RGB: {error}")
+                logging.warning(f"Preview could not load '{self.tiny_vae_name}', using Latent2RGB: {error}")
                 self.decoder_failed = True
         return self.decoder
 
@@ -312,13 +334,13 @@ class _AccumulatedPreviewWrapper:
             try:
                 video = _packed_video(x0, latent_shapes)
                 if video.ndim == 5:
-                    indices, durations = _frame_selection(video.shape[2], chunk["trim_steps"], self.frame_stride, self.fps)
+                    indices, durations = _frame_selection(video.shape[2], chunk["trim_steps"], self.frame_stride, self.fps, self._frame_per_token)
                     decoder = self._decoder()
                     if decoder is not None:
                         try:
                             frames = _tiny_frames(video, decoder, indices, self.max_resolution)
                         except Exception as error:
-                            logging.warning(f"LTX Video tiny VAE preview failed, using Latent2RGB: {error}")
+                            logging.warning(f"Tiny VAE preview failed, using Latent2RGB: {error}")
                             self.decoder = None
                             self.decoder_failed = True
                             frames = _latent_rgb_frames(video, latent_format, indices, self.max_resolution)
@@ -344,11 +366,11 @@ class _AccumulatedPreviewWrapper:
                             encoded = _encode_webp(frames, durations, self.quality)
                             if encoded is not None:
                                 payload["image"] = encoded
-                                _send(payload)
+                                _send(payload, self.wrapper_key)
 
                         encoder.submit(encode_and_send)
             except Exception as error:
-                logging.warning(f"LTX Video preview failed for chunk {chunk_index + 1}: {error}")
+                logging.warning(f"Preview failed for chunk {chunk_index + 1}: {error}")
             if original_callback is not None:
                 original_callback(step, x0, x, callback_total)
 
