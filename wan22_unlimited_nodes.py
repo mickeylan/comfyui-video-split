@@ -755,7 +755,17 @@ class _Wan22StandardUnlimitedSampler:
                 disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
             )
             trim_steps = chunk.overlap_steps
-            previous_video = output[:, :, -trim_steps:].detach().cpu() if trim_steps else None
+            # Save the last overlap_steps of this chunk's output for the next chunk.
+            # For the first chunk, overlap_steps=0 but we still need to save the
+            # overlap region for the next chunk.
+            if not chunk.is_first:
+                save_steps = trim_steps
+            elif overlap_frames > 0:
+                save_steps = min(overlap_frames // 4, output.shape[2])
+            else:
+                save_steps = 0
+            if save_steps:
+                previous_video = output[:, :, -save_steps:].detach().cpu()
             output_video.append(output[:, :, trim_steps:].detach().cpu())
             chunk_infos.append(f"Chunk {chunk.chunk_index + 1}/{len(chunks)}: latent [{vs}, {ve}), overlap={chunk.overlap_frames}f")
 
