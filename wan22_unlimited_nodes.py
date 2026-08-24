@@ -674,37 +674,14 @@ class Wan22UnlimitedSampler:
     sample = execute
 
 
-def _slice_standard_conditioning(conditioning, video_start, video_end, reference_latent=None):
+def _slice_standard_conditioning(conditioning, video_start, video_end):
     sliced = []
     for cross_attn, metadata in conditioning:
         metadata = metadata.copy()
         if "audio_embed" in metadata:
             raise ValueError("Wan22 unlimited sampler does not support audio conditioning")
         # Slice temporal conditioning to match the chunk's range.
-        concat_image = metadata.get("concat_latent_image")
-        concat_mask = metadata.get("concat_mask")
-        # For Wan I2V, if we have a reference latent (previous chunk's last frame),
-        # inject it at position 0 and adjust the conditioning accordingly.
-        if reference_latent is not None:
-            # Create a new concat_latent_image with reference at position 0
-            chunk_len = video_end - video_start
-            if torch.is_tensor(concat_image) and concat_image.ndim == 5 and concat_image.shape[2] >= video_end:
-                chunk_image = concat_image[:, :, video_start:video_end].clone()
-                # Place the reference latent at position 0
-                chunk_image[:, :, :1] = reference_latent
-                metadata["concat_latent_image"] = chunk_image
-            if torch.is_tensor(concat_mask) and concat_mask.ndim == 5 and concat_mask.shape[2] >= video_end:
-                chunk_mask = concat_mask[:, :, video_start:video_end].clone()
-                # Mark position 0 as known
-                chunk_mask[:, :, :1] = 0
-                metadata["concat_mask"] = chunk_mask
-        else:
-            # No reference injection, just slice normally
-            for key in ("concat_latent_image", "concat_mask"):
-                value = metadata.get(key)
-                if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
-                    metadata[key] = value[:, :, video_start:video_end].clone()
-        for key in ("control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
+        for key in ("concat_latent_image", "concat_mask", "control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
             value = metadata.get(key)
             if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
                 metadata[key] = value[:, :, video_start:video_end].clone()
@@ -766,8 +743,7 @@ class _Wan22StandardUnlimitedSampler:
             full_noise = comfy.sample.prepare_noise(samples, noise_seed, latent_image.get("batch_index"))
         chunks = _chunk_plan(samples.shape[2], max(5, align_pixel_frames_to_chunk(chunk_frames)), overlap_frames)
         output_video = []
-        reference_latent = None
-        overlap_context = None
+        previous_video = None
         chunk_infos = []
         force_full_denoise = return_with_leftover_noise == "disable"
         for chunk in chunks:
@@ -775,36 +751,29 @@ class _Wan22StandardUnlimitedSampler:
             chunk_latent = samples[:, :, vs:ve].clone()
             chunk_noise = full_noise[:, :, vs:ve].clone()
             chunk_mask = _slice_mask(latent_image.get("noise_mask"), vs, ve, samples)
-            # For non-first chunks: inject overlap context and reference
-            if not chunk.is_first:
-                # Copy overlap context (positions 1 to overlap_steps)
-                if overlap_context is not None and chunk.overlap_steps > 1:
-                    context_len = min(overlap_context.shape[2], chunk.overlap_steps - 1, chunk_latent.shape[2] - 1)
-                    if context_len > 0:
-                        chunk_latent[:, :, 1:1 + context_len] = overlap_context[:, :, -context_len:].to(chunk_latent)
-                        chunk_noise[:, :, 1:1 + context_len] = 0
-                        chunk_mask[:, :, 1:1 + context_len] = 0
+            # For non-first chunks: inject overlap context from previous chunk
+            if chunk.overlap_steps and previous_video is not None:
+                chunk_latent[:, :, :chunk.overlap_steps] = previous_video.to(chunk_latent)
+                chunk_noise[:, :, :chunk.overlap_steps] = 0
+                chunk_mask[:, :, :chunk.overlap_steps] = 0
             output = comfy.sample.sample(
                 model, chunk_noise, steps, cfg, sampler_name, scheduler,
-                _slice_standard_conditioning(positive, vs, ve, reference_latent),
-                _slice_standard_conditioning(negative, vs, ve, reference_latent),
+                _slice_standard_conditioning(positive, vs, ve),
+                _slice_standard_conditioning(negative, vs, ve),
                 chunk_latent, disable_noise=add_noise == "disable", start_step=start_at_step,
                 last_step=end_at_step, force_full_denoise=force_full_denoise, noise_mask=chunk_mask,
                 disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
             )
             trim_steps = chunk.overlap_steps
-            # Save the last position as reference for next chunk's I2V conditioning.
-            # Save additional overlap positions for temporal continuity.
-            if output.shape[2]:
-                reference_latent = output[:, :, -1:].detach().cpu()
-                # Also save overlap context for temporal continuity (excluding the reference)
-                if overlap_frames > 0 and output.shape[2] > 1:
-                    overlap_context = output[:, :, -min(overlap_frames // 4 + 1, output.shape[2]):-1].detach().cpu()
-                else:
-                    overlap_context = None
+            # Save overlap for next chunk. First chunk still needs to save overlap for chunk 2.
+            if not chunk.is_first:
+                save_steps = trim_steps
+            elif overlap_frames > 0:
+                save_steps = min(overlap_frames // 4, output.shape[2])
             else:
-                reference_latent = None
-                overlap_context = None
+                save_steps = 0
+            if save_steps:
+                previous_video = output[:, :, -save_steps:].detach().cpu()
             output_video.append(output[:, :, trim_steps:].detach().cpu())
             chunk_infos.append(f"Chunk {chunk.chunk_index + 1}/{len(chunks)}: latent [{vs}, {ve}), overlap={chunk.overlap_frames}f")
 
