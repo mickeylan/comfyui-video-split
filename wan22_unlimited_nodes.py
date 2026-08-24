@@ -680,8 +680,20 @@ def _slice_standard_conditioning(conditioning, video_start, video_end):
         metadata = metadata.copy()
         if "audio_embed" in metadata:
             raise ValueError("Wan22 unlimited sampler does not support audio conditioning")
-        # Slice temporal conditioning to match the chunk's range.
-        for key in ("concat_latent_image", "concat_mask", "control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
+        concat_image = metadata.get("concat_latent_image")
+        concat_mask = metadata.get("concat_mask")
+        # Wan I2V: reference image is at position 0 of concat_latent_image.
+        # For non-first chunks, slicing loses the reference at position 0.
+        # Instead, keep the original conditioning intact for all chunks.
+        # The model will use position 0 as reference and generate positions video_start:video_end.
+        if torch.is_tensor(concat_image) and concat_image.ndim == 5 and concat_image.shape[2]:
+            # Keep the original concat_latent_image - don't slice
+            # This preserves the reference at position 0 for all chunks
+            pass
+        if torch.is_tensor(concat_mask) and concat_mask.ndim == 5 and concat_mask.shape[2]:
+            # Keep the original concat_mask - don't slice
+            pass
+        for key in ("control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
             value = metadata.get(key)
             if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
                 metadata[key] = value[:, :, video_start:video_end].clone()
