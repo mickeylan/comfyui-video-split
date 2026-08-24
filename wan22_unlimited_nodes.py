@@ -565,7 +565,14 @@ class Wan22UnlimitedSampler:
 
                 output_video.append(out_video[:, :, chunk.overlap_steps:].detach().cpu())
                 denoised_video.append(den_video[:, :, chunk.overlap_steps:].detach().cpu())
-                previous_video = out_video[:, :, -chunk.overlap_steps:].detach().cpu() if chunk.overlap_steps else None
+                # Save overlap for next chunk. First chunk still needs to save overlap for chunk 2.
+                if not chunk.is_first:
+                    save_steps = chunk.overlap_steps
+                elif overlap_frames > 0:
+                    save_steps = min(overlap_frames // 4, out_video.shape[2])
+                else:
+                    save_steps = 0
+                previous_video = out_video[:, :, -save_steps:].detach().cpu() if save_steps else None
 
                 chunk_info = (
                     f"Chunk {chunk_idx + 1}/{len(chunks)}: "
