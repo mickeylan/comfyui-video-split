@@ -83,7 +83,8 @@ class ChunkPlan:
     frame_start: int       # 像素帧级别起始
     frame_end: int         # 像素帧级别结束
     is_first: bool
-    overlap_frames: int    # 重叠像素帧数 (前一块的末帧)
+    overlap_steps: int     # 重叠 latent 步数
+    overlap_frames: int    # 重叠像素帧数
 
 
 def _chunk_plan(video_t: int, chunk_frames: int, overlap_frames: int = 8) -> list[ChunkPlan]:
@@ -106,12 +107,12 @@ def _chunk_plan(video_t: int, chunk_frames: int, overlap_frames: int = 8) -> lis
     # 转换: 像素帧 → latent 步
     max_chunk_t = pixel_frames_to_latent_steps(max_chunk_frames)
 
-    # 重叠: 像素帧 → latent 步
-    # overlap_frames 必须对齐到 4 帧边界
-    overlap_frames = align_pixel_frames_to_chunk(overlap_frames)
-    overlap_t = pixel_frames_to_latent_steps(overlap_frames) if overlap_frames > 0 else 0
-    # 有效: 确保 overlap_t 不会导致块太小
-    overlap_t = min(overlap_t, max_chunk_t - 1)
+    if overlap_frames < 0:
+        raise ValueError(f"overlap_frames must be >= 0, got {overlap_frames}")
+    # Overlap is a count of shared pixel frames, not a 1+4N video length.
+    # Keep zero as zero and align positive values down to latent steps.
+    overlap_t = min(overlap_frames // 4, max_chunk_t - 1)
+    effective_overlap_frames = overlap_t * 4
 
     if max_chunk_t < 2:
         raise ValueError(
@@ -128,8 +129,6 @@ def _chunk_plan(video_t: int, chunk_frames: int, overlap_frames: int = 8) -> lis
         frame_start = 0 if not plan else latent_steps_to_pixel_frames(video_start)
         frame_end = latent_steps_to_pixel_frames(next_video_end)
 
-        actual_overlap = 0 if not plan else latent_steps_to_pixel_frames(video_start) - latent_steps_to_pixel_frames(video_start + overlap_t)
-
         plan.append(ChunkPlan(
             chunk_index=len(plan),
             video_start=video_start,
@@ -137,7 +136,8 @@ def _chunk_plan(video_t: int, chunk_frames: int, overlap_frames: int = 8) -> lis
             frame_start=frame_start,
             frame_end=frame_end,
             is_first=not plan,
-            overlap_frames=actual_overlap,
+            overlap_steps=0 if not plan else overlap_t,
+            overlap_frames=0 if not plan else effective_overlap_frames,
         ))
         video_end = next_video_end
 
@@ -150,7 +150,7 @@ def _chunk_plan(video_t: int, chunk_frames: int, overlap_frames: int = 8) -> lis
 
 def _slice_mask(mask, start, end, reference):
     if mask is None:
-        return torch.ones_like(reference[:, :1])
+        return torch.ones_like(reference[:, :1, start:end])
     mask = comfy.utils.reshape_mask(mask, reference.shape)
     return mask[:, :1, start:end].clone()
 
@@ -422,9 +422,9 @@ class Wan22UnlimitedSampler:
             logging.info(f"Video latent shape: {tuple(video.shape)}")
             logging.info(f"Video latent steps: {video_t}")
 
-        # 对齐用户参数到 Wan22 约束
+        # Chunk length uses the 1+4N grid. Zero overlap remains disabled.
         chunk_frames = max(5, align_pixel_frames_to_chunk(chunk_frames))
-        overlap_frames = align_pixel_frames_to_chunk(min(overlap_frames, chunk_frames - 5))
+        overlap_frames = min(overlap_frames, chunk_frames - 5)
 
         chunks = _chunk_plan(video_t, chunk_frames, overlap_frames)
         if debug:
@@ -521,26 +521,15 @@ class Wan22UnlimitedSampler:
                 chunk_video_noise = video_noise[:, :, vs:ve].clone()
                 video_mask = _slice_mask(input_mask, vs, ve, video)
 
-                # 重叠引导: 用前一块的末 latent 步替换本块开头的重叠部分
-                if not chunk.is_first and previous_video is not None:
-                    overlap_t = chunk.video_start - (chunk.frame_start - latent_steps_to_pixel_frames(chunk.video_start - overlap_frames // 4))
-                    # 简化为: 直接用 latent 步重叠
-                    prev_t = previous_video.shape[2]
-                    if prev_t > 0:
-                        # 复制前一块的末帧到本块开头
-                        copy_t = min(prev_t, chunk_video.shape[2])
-                        chunk_video[:, :, :copy_t] = previous_video[:, :, -copy_t:].to(chunk_video)
-                        chunk_video_noise[:, :, :copy_t] = 0
-                        video_mask[:, :, :copy_t] = 0
+                # Reuse exactly the planned context from the previous chunk.
+                if chunk.overlap_steps and previous_video is not None:
+                    chunk_video[:, :, :chunk.overlap_steps] = previous_video.to(chunk_video)
+                    chunk_video_noise[:, :, :chunk.overlap_steps] = 0
+                    video_mask[:, :, :chunk.overlap_steps] = 0
 
                 # 设置预览分块
                 if preview_execution is not None:
-                    trim_steps = 0 if chunk.is_first else min(
-                        chunk.video_start,
-                        chunk.video_end - latent_steps_to_pixel_frames(
-                            pixel_frames_to_latent_steps(chunk.overlap_frames)
-                        )
-                    )
+                    trim_steps = chunk.overlap_steps
                     preview_execution.set_chunk(
                         chunk_idx,
                         chunk.frame_start,
@@ -569,24 +558,14 @@ class Wan22UnlimitedSampler:
                     if preview_execution is not None:
                         preview_execution.clear_chunk()
 
-                if hasattr(sampled, 'unbind'):
-                    out_video = sampled.unbind()[0]
-                else:
-                    out_video = sampled
+                if sampled.is_nested or denoised.is_nested:
+                    raise ValueError("Wan22UnlimitedSampler requires a single video latent stream")
+                out_video = sampled
+                den_video = denoised
 
-                if hasattr(denoised, 'unbind'):
-                    den_video = denoised.unbind()[0]
-                else:
-                    den_video = denoised
-
-                # 裁剪重叠部分 (除了第一块)
-                trim_t = 0 if chunk.is_first else pixel_frames_to_latent_steps(chunk.overlap_frames)
-                output_video.append(out_video[:, :, trim_t:].detach().cpu())
-                denoised_video.append(den_video[:, :, trim_t:].detach().cpu())
-
-                # 保存末帧供下一块引导
-                if out_video.shape[2] > 0:
-                    previous_video = out_video[:, :, -min(16, out_video.shape[2]):].detach().cpu()
+                output_video.append(out_video[:, :, chunk.overlap_steps:].detach().cpu())
+                denoised_video.append(den_video[:, :, chunk.overlap_steps:].detach().cpu())
+                previous_video = out_video[:, :, -chunk.overlap_steps:].detach().cpu() if chunk.overlap_steps else None
 
                 chunk_info = (
                     f"Chunk {chunk_idx + 1}/{len(chunks)}: "
@@ -631,12 +610,12 @@ class Wan22UnlimitedSampler:
         final_samples = torch.cat(output_video, dim=2)
         final_denoised = torch.cat(denoised_video, dim=2)
 
-        final_output = {"samples": final_samples}
-        final_denoised_output = {"samples": final_denoised}
-
-        if "batch_index" in latent_image:
-            final_output["batch_index"] = latent_image["batch_index"]
-            final_denoised_output["batch_index"] = latent_image["batch_index"]
+        final_output = latent_image.copy()
+        final_output.pop("downscale_ratio_spacial", None)
+        final_output.pop("downscale_ratio_temporal", None)
+        final_output["samples"] = final_samples
+        final_denoised_output = final_output.copy()
+        final_denoised_output["samples"] = final_denoised
 
         if debug:
             logging.info(f"最终输出形状: {final_samples.shape}")
@@ -686,6 +665,115 @@ class Wan22UnlimitedSampler:
         return (final_output, final_denoised_output, progressive_images, "\n".join(chunk_infos))
 
     sample = execute
+
+
+def _slice_standard_conditioning(conditioning, video_start, video_end):
+    sliced = []
+    for cross_attn, metadata in conditioning:
+        metadata = metadata.copy()
+        if "audio_embed" in metadata:
+            raise ValueError("Wan22 unlimited sampler does not support audio conditioning")
+        for key in ("concat_latent_image", "concat_mask", "control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
+            value = metadata.get(key)
+            if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
+                metadata[key] = value[:, :, video_start:video_end].clone()
+        for key in ("vace_frames", "vace_mask"):
+            value = metadata.get(key)
+            if value is not None:
+                metadata[key] = [item[:, :, video_start:video_end].clone() if item.ndim == 5 and item.shape[2] >= video_end else item for item in value]
+        context = metadata.get("context_latents")
+        if context is not None:
+            metadata["context_latents"] = [item[:, :, video_start:video_end].clone() if item.ndim == 5 and item.shape[2] >= video_end else item for item in context]
+        sliced.append([cross_attn, metadata])
+    return sliced
+
+
+class _Wan22StandardUnlimitedSampler:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "add_noise": (["enable", "disable"], {"advanced": True}),
+            "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True}),
+            "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+            "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01}),
+            "sampler_name": (comfy.samplers.KSampler.SAMPLERS,),
+            "scheduler": (comfy.samplers.KSampler.SCHEDULERS,),
+            "positive": ("CONDITIONING",),
+            "negative": ("CONDITIONING",),
+            "latent_image": ("LATENT",),
+            "start_at_step": ("INT", {"default": 0, "min": 0, "max": 10000, "advanced": True}),
+            "end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000, "advanced": True}),
+            "return_with_leftover_noise": (["disable", "enable"], {"advanced": True}),
+            "chunk_frames": ("INT", {"default": 33, "min": 5, "max": 1024, "step": 4}),
+            "overlap_frames": ("INT", {"default": 8, "min": 0, "max": 256, "step": 4}),
+        }, "optional": {"debug": ("BOOLEAN", {"default": False})}}
+
+    RETURN_TYPES = ("LATENT", "STRING")
+    RETURN_NAMES = ("output", "chunk_info")
+    FUNCTION = "execute"
+    CATEGORY = "video/split"
+
+    def execute(self, model, add_noise, noise_seed, steps, cfg, sampler_name, scheduler, positive, negative,
+                latent_image, start_at_step, end_at_step, return_with_leftover_noise, chunk_frames, overlap_frames,
+                debug=False):
+        if not 0 <= start_at_step <= end_at_step:
+            raise ValueError("Sampling steps must satisfy 0 <= start_at_step <= end_at_step")
+        fixed_latent = latent_image.copy()
+        samples = comfy.sample.fix_empty_latent_channels(
+            model,
+            latent_image["samples"],
+            latent_image.get("downscale_ratio_spacial"),
+            latent_image.get("downscale_ratio_temporal"),
+        )
+        if samples.is_nested or samples.ndim != 5:
+            raise ValueError("Wan22 unlimited sampler requires one video latent [B,C,T,H,W]")
+        fixed_latent["samples"] = samples
+        if add_noise == "disable":
+            full_noise = comfy.sample.prepare_empty_noise(samples)
+        else:
+            full_noise = comfy.sample.prepare_noise(samples, noise_seed, latent_image.get("batch_index"))
+        chunks = _chunk_plan(samples.shape[2], max(5, align_pixel_frames_to_chunk(chunk_frames)), overlap_frames)
+        output_video = []
+        previous_video = None
+        chunk_infos = []
+        force_full_denoise = return_with_leftover_noise == "disable"
+        for chunk in chunks:
+            vs, ve = chunk.video_start, chunk.video_end
+            chunk_latent = samples[:, :, vs:ve].clone()
+            chunk_noise = full_noise[:, :, vs:ve].clone()
+            chunk_mask = _slice_mask(latent_image.get("noise_mask"), vs, ve, samples)
+            if chunk.overlap_steps and previous_video is not None:
+                chunk_latent[:, :, :chunk.overlap_steps] = previous_video.to(chunk_latent)
+                chunk_noise[:, :, :chunk.overlap_steps] = 0
+                chunk_mask[:, :, :chunk.overlap_steps] = 0
+            output = comfy.sample.sample(
+                model, chunk_noise, steps, cfg, sampler_name, scheduler,
+                _slice_standard_conditioning(positive, vs, ve), _slice_standard_conditioning(negative, vs, ve),
+                chunk_latent, disable_noise=add_noise == "disable", start_step=start_at_step,
+                last_step=end_at_step, force_full_denoise=force_full_denoise, noise_mask=chunk_mask,
+                disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
+            )
+            trim_steps = chunk.overlap_steps
+            previous_video = output[:, :, -trim_steps:].detach().cpu() if trim_steps else None
+            output_video.append(output[:, :, trim_steps:].detach().cpu())
+            chunk_infos.append(f"Chunk {chunk.chunk_index + 1}/{len(chunks)}: latent [{vs}, {ve}), overlap={chunk.overlap_frames}f")
+
+        final_output = latent_image.copy()
+        final_output.pop("downscale_ratio_spacial", None)
+        final_output.pop("downscale_ratio_temporal", None)
+        final_output["samples"] = torch.cat(output_video, dim=2)
+        if debug:
+            logging.info("Wan22 unlimited sampler:\n%s", "\n".join(chunk_infos))
+        return (final_output, "\n".join(chunk_infos))
+
+
+class Wan22LowNoiseUnlimitedSampler(_Wan22StandardUnlimitedSampler):
+    pass
+
+
+class Wan22HighNoiseUnlimitedSampler(_Wan22StandardUnlimitedSampler):
+    pass
 
 
 # ============================================================================
@@ -751,9 +839,13 @@ if HAS_IO_LATEST:
 
 WAN22_NODE_CLASS_MAPPINGS = {
     "Wan22UnlimitedSampler": Wan22UnlimitedSampler,
+    "Wan22LowNoiseUnlimitedSampler": Wan22LowNoiseUnlimitedSampler,
+    "Wan22HighNoiseUnlimitedSampler": Wan22HighNoiseUnlimitedSampler,
 }
 WAN22_NODE_DISPLAY_NAME_MAPPINGS = {
     "Wan22UnlimitedSampler": "Wan22 / Bernini Sampler Unlimited",
+    "Wan22LowNoiseUnlimitedSampler": "Wan22 / Bernini Low Noise Sampler Unlimited",
+    "Wan22HighNoiseUnlimitedSampler": "Wan22 / Bernini High Noise Sampler Unlimited",
 }
 
 if HAS_IO_LATEST:

@@ -72,6 +72,16 @@
 | **VideoSplit SamplerCustomAdvanced** | LTX 分块采样器，解决高分辨率长视频的 VRAM 问题 |
 | **VideoSplit VRAMEstimator** | VRAM 估算器，估算显存需求 |
 
+### Wan 2.2 / Bernini 分块采样
+
+| 节点名称 | 功能 |
+|---------|------|
+| **Wan22 / Bernini Sampler Unlimited** | 原有 Custom Sampler 高级 `noise`、`guider`、`sampler`、`sigmas` 接口。 |
+| **Wan22 / Bernini Low Noise Sampler Unlimited** | 标准 KSamplerAdvanced 接口的单模型分块采样器。 |
+| **Wan22 / Bernini High Noise Sampler Unlimited** | 标准 KSamplerAdvanced 接口的单模型分块采样器；将低噪节点的 LATENT 输出接到 `latent_image`。 |
+
+低噪和高噪节点都保留 `model`、`add_noise`、`noise_seed`、`steps`、`cfg`、`sampler_name`、`scheduler`、`positive`、`negative`、`latent_image`、`start_at_step`、`end_at_step`、`return_with_leftover_noise`，另加 `chunk_frames` 和 `overlap_frames`。音频 conditioning 不支持。
+
 ### 文字/字幕节点 📝
 
 | 节点名称 | 功能 |
