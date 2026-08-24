@@ -183,6 +183,59 @@ def _conditioning_for_chunk(original_conds, video_start, video_end, tokens_per_f
                     }
                 else:
                     cond.pop("generated_keyframes", None)
+            # Slice temporal conditioning
+            for key in ("concat_latent_image", "concat_mask", "control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
+                value = cond.get(key)
+                if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
+                    cond[key] = value[:, :, video_start:video_end].clone()
+            entries.append(cond)
+        chunk_conds[name] = entries
+    return chunk_conds
+
+
+def _conditioning_for_chunk_with_reference(original_conds, video_start, video_end, tokens_per_frame, reference_latent):
+    """裁剪条件到当前分块的时间范围，并用上一块最后一帧更新 I2V 参考"""
+    chunk_conds = {}
+    for name, conditioning in original_conds.items():
+        entries = []
+        for cond in conditioning:
+            cond = cond.copy()
+            cond.pop("keyframe_idxs", None)
+            cond.pop("guide_attention_entries", None)
+            generated = cond.get("generated_keyframes")
+            if generated is not None:
+                first = generated["first_latent_frame"]
+                last = first + generated["num_keyframes"]
+                local_start = max(first, video_start)
+                local_end = min(last, video_end)
+                if local_start < local_end:
+                    cond["generated_keyframes"] = {
+                        **generated,
+                        "first_latent_frame": local_start - video_start,
+                        "num_keyframes": local_end - local_start,
+                        "tokens_per_frame": tokens_per_frame,
+                    }
+                else:
+                    cond.pop("generated_keyframes", None)
+
+            # Handle concat_latent_image for I2V continuity
+            concat_image = cond.get("concat_latent_image")
+            concat_mask = cond.get("concat_mask")
+            if torch.is_tensor(concat_image) and concat_image.ndim == 5 and concat_image.shape[2] >= video_end:
+                chunk_image = concat_image[:, :, video_start:video_end].clone()
+                if video_start > 0 and reference_latent is not None:
+                    chunk_image[:, :, :1] = reference_latent[:, :16, :1].to(chunk_image)
+                cond["concat_latent_image"] = chunk_image
+            if torch.is_tensor(concat_mask) and concat_mask.ndim == 5 and concat_mask.shape[2] >= video_end:
+                chunk_mask = concat_mask[:, :, video_start:video_end].clone()
+                if video_start > 0:
+                    chunk_mask[:, :, :1] = 0
+                cond["concat_mask"] = chunk_mask
+
+            for key in ("control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
+                value = cond.get(key)
+                if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
+                    cond[key] = value[:, :, video_start:video_end].clone()
             entries.append(cond)
         chunk_conds[name] = entries
     return chunk_conds
@@ -686,15 +739,29 @@ class Wan22UnlimitedSampler:
     sample = execute
 
 
-def _slice_standard_conditioning(conditioning, video_start, video_end):
+def _slice_standard_conditioning(conditioning, video_start, video_end, reference_latent=None):
     sliced = []
     for cross_attn, metadata in conditioning:
         metadata = metadata.copy()
         if "audio_embed" in metadata:
             raise ValueError("Wan22 unlimited sampler does not support audio conditioning")
-        # Slice conditioning to the chunk's time range.
-        # The reference frame is injected via the latent's position 0, not here.
-        for key in ("concat_latent_image", "concat_mask", "control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
+
+        # Handle concat_latent_image for I2V continuity
+        concat_image = metadata.get("concat_latent_image")
+        concat_mask = metadata.get("concat_mask")
+        if torch.is_tensor(concat_image) and concat_image.ndim == 5 and concat_image.shape[2] >= video_end:
+            chunk_image = concat_image[:, :, video_start:video_end].clone()
+            if video_start > 0 and reference_latent is not None:
+                chunk_image[:, :, :1] = reference_latent[:, :16, :1].to(chunk_image)
+            metadata["concat_latent_image"] = chunk_image
+        if torch.is_tensor(concat_mask) and concat_mask.ndim == 5 and concat_mask.shape[2] >= video_end:
+            chunk_mask = concat_mask[:, :, video_start:video_end].clone()
+            if video_start > 0:
+                chunk_mask[:, :, :1] = 0
+            metadata["concat_mask"] = chunk_mask
+
+        # Slice other temporal conditioning
+        for key in ("control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
             value = metadata.get(key)
             if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
                 metadata[key] = value[:, :, video_start:video_end].clone()
