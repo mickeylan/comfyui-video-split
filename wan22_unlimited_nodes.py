@@ -601,12 +601,22 @@ class Wan22UnlimitedSampler:
                         trim_steps,
                     )
 
-                chunk_conds = _conditioning_for_chunk(
-                    original_conds,
-                    vs,
-                    ve,
-                    chunk_video.shape[3] * chunk_video.shape[4],
-                )
+                # 使用参考帧更新条件（后续段落需要）
+                if chunk.is_first:
+                    chunk_conds = _conditioning_for_chunk(
+                        original_conds,
+                        vs,
+                        ve,
+                        chunk_video.shape[3] * chunk_video.shape[4],
+                    )
+                else:
+                    chunk_conds = _conditioning_for_chunk_with_reference(
+                        original_conds,
+                        vs,
+                        ve,
+                        chunk_video.shape[3] * chunk_video.shape[4],
+                        reference_frame,
+                    )
 
                 try:
                     sampled, denoised = prepared.sample(
@@ -854,10 +864,14 @@ class _Wan22StandardUnlimitedSampler:
                     chunk_noise[:, :, 1:1 + overlap_len] = 0
                     chunk_mask[:, :, 1:1 + overlap_len] = 0
 
+            # 后续段落需要传入参考帧更新条件
+            pos_conds = _slice_standard_conditioning(positive, vs, ve, 
+                                                     reference_frame if not chunk.is_first else None)
+            neg_conds = _slice_standard_conditioning(negative, vs, ve,
+                                                     reference_frame if not chunk.is_first else None)
             output = comfy.sample.sample(
                 model, chunk_noise, steps, cfg, sampler_name, scheduler,
-                _slice_standard_conditioning(positive, vs, ve),
-                _slice_standard_conditioning(negative, vs, ve),
+                pos_conds, neg_conds,
                 chunk_latent, disable_noise=add_noise == "disable", start_step=start_at_step,
                 last_step=end_at_step, force_full_denoise=force_full_denoise, noise_mask=chunk_mask,
                 disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
