@@ -17,6 +17,7 @@ Wan22 关键参数:
 """
 
 import logging
+import time
 from dataclasses import dataclass
 
 import torch
@@ -679,6 +680,20 @@ def _encode_video_frames(vae, frames):
     return torch.cat([vae.encode(video) for video in frames], dim=0)
 
 
+def _stage_sigma_count(model, steps, sampler_name, scheduler, start_step, end_step, force_full_denoise):
+    sigmas = comfy.samplers.KSampler(
+        model, steps=steps, device=model.load_device, sampler=sampler_name,
+        scheduler=scheduler, denoise=1.0, model_options=model.model_options,
+    ).sigmas.clone()
+    if end_step is not None and end_step < len(sigmas) - 1:
+        sigmas = sigmas[:end_step + 1]
+        if force_full_denoise:
+            sigmas[-1] = 0
+    if start_step is not None:
+        sigmas = sigmas[start_step:] if start_step < len(sigmas) - 1 else sigmas[:0]
+    return len(sigmas), max(0, len(sigmas) - 1), sigmas.tolist()
+
+
 def _conditioning_debug(conditioning):
     for _, metadata in conditioning:
         concat_image = metadata.get("concat_latent_image")
@@ -906,6 +921,18 @@ class Wan22TwoStageUnlimitedSampler:
                 high_latent.pop("noise_mask", None)
             else:
                 high_latent["noise_mask"] = chunk_mask
+            if debug:
+                sigma_count, sample_count, stage_sigmas = _stage_sigma_count(
+                    high_model, steps, sampler_name, scheduler, high_start_at_step, high_end_at_step,
+                    high_return_with_leftover_noise == "disable",
+                )
+                logging.info(
+                    "Wan chunk %d HIGH start: steps=%d range=%d->%d add_noise=%s leftover=%s "
+                    "sigma_count=%d sample_count=%d sigmas=%s",
+                    chunk.chunk_index + 1, steps, high_start_at_step, high_end_at_step,
+                    high_add_noise, high_return_with_leftover_noise, sigma_count, sample_count, stage_sigmas,
+                )
+            stage_started = time.perf_counter()
             high_output = nodes.common_ksampler(
                 high_model, noise_seed, steps, cfg, sampler_name, scheduler,
                 positive_chunk, negative_chunk, high_latent,
@@ -915,14 +942,27 @@ class Wan22TwoStageUnlimitedSampler:
             )[0]
             if debug:
                 logging.info(
-                    "Wan chunk %d high output=%s mean=%.5f std=%.5f",
+                    "Wan chunk %d HIGH done in %.2fs output=%s mean=%.5f std=%.5f",
                     chunk.chunk_index + 1,
+                    time.perf_counter() - stage_started,
                     tuple(high_output["samples"].shape),
                     high_output["samples"].float().mean().item(),
                     high_output["samples"].float().std().item(),
                 )
             low_positive = _slice_standard_conditioning(positive, vs, ve, reference_latent)
             low_negative = _slice_standard_conditioning(negative, vs, ve, reference_latent)
+            if debug:
+                sigma_count, sample_count, stage_sigmas = _stage_sigma_count(
+                    low_model, steps, sampler_name, scheduler, low_start_at_step, low_end_at_step,
+                    low_return_with_leftover_noise == "disable",
+                )
+                logging.info(
+                    "Wan chunk %d LOW start: steps=%d range=%d->%d add_noise=%s leftover=%s "
+                    "sigma_count=%d sample_count=%d sigmas=%s",
+                    chunk.chunk_index + 1, steps, low_start_at_step, low_end_at_step,
+                    low_add_noise, low_return_with_leftover_noise, sigma_count, sample_count, stage_sigmas,
+                )
+            stage_started = time.perf_counter()
             low_output = nodes.common_ksampler(
                 low_model, noise_seed, steps, cfg, sampler_name, scheduler,
                 low_positive, low_negative, high_output,
@@ -934,8 +974,9 @@ class Wan22TwoStageUnlimitedSampler:
 
             if debug:
                 logging.info(
-                    "Wan chunk %d low output=%s mean=%.5f std=%.5f",
+                    "Wan chunk %d LOW done in %.2fs output=%s mean=%.5f std=%.5f",
                     chunk.chunk_index + 1,
+                    time.perf_counter() - stage_started,
                     tuple(low_samples.shape),
                     low_samples.float().mean().item(),
                     low_samples.float().std().item(),
