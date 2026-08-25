@@ -31,7 +31,7 @@ import comfy.sampler_helpers
 import comfy.samplers
 import latent_preview
 
-from .preview import begin_preview_execution
+from .preview import begin_preview_execution, WAN22_PREVIEW_WRAPPER_KEY
 
 
 # ============================================================================
@@ -524,7 +524,7 @@ class Wan22UnlimitedSampler:
         chunk_infos = []
 
         # 开始预览
-        preview_execution = begin_preview_execution(guider.model_patcher, len(chunks))
+        preview_execution = begin_preview_execution(guider.model_patcher, len(chunks), WAN22_PREVIEW_WRAPPER_KEY)
 
         # 选择最大的块作为代表性块（显存最紧张的情况）
         representative = max(
