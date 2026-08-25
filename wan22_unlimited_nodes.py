@@ -221,11 +221,26 @@ def _conditioning_for_chunk_with_reference(original_conds, video_start, video_en
             # Handle concat_latent_image for I2V continuity
             concat_image = cond.get("concat_latent_image")
             concat_mask = cond.get("concat_mask")
-            if torch.is_tensor(concat_image) and concat_image.ndim == 5 and concat_image.shape[2] >= video_end:
-                chunk_image = concat_image[:, :, video_start:video_end].clone()
-                if video_start > 0 and reference_latent is not None:
-                    chunk_image[:, :, :1] = reference_latent[:, :16, :1].to(chunk_image)
-                cond["concat_latent_image"] = chunk_image
+            if torch.is_tensor(concat_image) and concat_image.ndim == 5:
+                if video_start == 0:
+                    # 首块：打印原始 conditioning 信息
+                    orig_mean = concat_image[:, :min(4, concat_image.shape[1]), :1].mean().item()
+                    logging.info(f"  [首块] concat_latent_image: shape={concat_image.shape}, pos0 mean={orig_mean:.4f}")
+                else:
+                    logging.info(f"  [Chunk N] concat_latent_image: shape={concat_image.shape}, video_start={video_start}")
+                if concat_image.shape[2] >= video_end:
+                    chunk_image = concat_image[:, :, video_start:video_end].clone()
+                    logging.info(f"  chunk_image after slice: shape={chunk_image.shape}, pos0 mean={chunk_image[:, :min(4, chunk_image.shape[1]), :1].mean().item():.4f}")
+                    if video_start > 0 and reference_latent is not None:
+                        logging.info(f"  Replacing position 0 with reference: ref_shape={reference_latent.shape}, ref_pos0_mean={reference_latent[:, :min(4, reference_latent.shape[1]), :1].mean().item():.4f}")
+                        ref_frames = min(1, chunk_image.shape[2])
+                        if ref_frames > 0:
+                            chunk_image[:, :, :ref_frames] = reference_latent[:, :chunk_image.shape[1], :ref_frames].to(chunk_image)
+                            after_mean = chunk_image[:, :min(4, chunk_image.shape[1]), :1].mean().item()
+                            logging.info(f"  After replacement: chunk_image pos0 mean={after_mean:.4f}")
+                    cond["concat_latent_image"] = chunk_image
+                else:
+                    logging.warning(f"  concat_latent_image has {concat_image.shape[2]} frames, need {video_end}, skipping replacement")
             if torch.is_tensor(concat_mask) and concat_mask.ndim == 5 and concat_mask.shape[2] >= video_end:
                 chunk_mask = concat_mask[:, :, video_start:video_end].clone()
                 if video_start > 0:
