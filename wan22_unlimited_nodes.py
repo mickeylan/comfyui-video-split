@@ -939,9 +939,10 @@ class Wan22TwoStageUnlimitedSampler:
                     low_output.float().std().item(),
                 )
             output_video.append(low_output[:, :, chunk.overlap_steps:].detach().cpu())
-            if chunk.chunk_index + 1 < len(chunks) and chunk.overlap_steps:
+            next_overlap_steps = chunks[chunk.chunk_index + 1].overlap_steps if chunk.chunk_index + 1 < len(chunks) else 0
+            if next_overlap_steps:
                 decoded = vae.decode(low_output)
-                context_frames = 1 + 4 * (chunk.overlap_steps - 1)
+                context_frames = 1 + 4 * (next_overlap_steps - 1)
                 reference_latent = _encode_video_frames(vae, decoded[:, -context_frames:]).detach().cpu()
                 if debug:
                     logging.info(
