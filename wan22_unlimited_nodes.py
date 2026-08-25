@@ -679,20 +679,6 @@ def _encode_video_frames(vae, frames):
     return torch.cat([vae.encode(video) for video in frames], dim=0)
 
 
-def _stage_sigmas(model, steps, sampler_name, scheduler, start_step, end_step, force_full_denoise):
-    sigmas = comfy.samplers.KSampler(
-        model, steps=steps, device=model.load_device, sampler=sampler_name,
-        scheduler=scheduler, denoise=1.0, model_options=model.model_options,
-    ).sigmas.clone()
-    if end_step is not None and end_step < len(sigmas) - 1:
-        sigmas = sigmas[:end_step + 1]
-        if force_full_denoise:
-            sigmas[-1] = 0
-    if start_step is not None:
-        sigmas = sigmas[start_step:] if start_step < len(sigmas) - 1 else sigmas[:0]
-    return sigmas
-
-
 def _conditioning_debug(conditioning):
     for _, metadata in conditioning:
         concat_image = metadata.get("concat_latent_image")
@@ -886,8 +872,6 @@ class Wan22TwoStageUnlimitedSampler:
                 f"got {vae.latent_channels} channels with latent_dim={vae.latent_dim}"
             )
 
-        full_noise = (comfy.sample.prepare_empty_noise(samples) if high_add_noise == "disable"
-                      else comfy.sample.prepare_noise(samples, noise_seed, latent_image.get("batch_index")))
         chunks = _chunk_plan(samples.shape[2], max(5, align_pixel_frames_to_chunk(chunk_frames)), overlap_frames)
         output_video = []
         reference_latent = None
@@ -896,13 +880,11 @@ class Wan22TwoStageUnlimitedSampler:
         for chunk in chunks:
             vs, ve = chunk.video_start, chunk.video_end
             chunk_latent = samples[:, :, vs:ve].clone()
-            chunk_noise = full_noise[:, :, vs:ve].clone()
             input_mask = latent_image.get("noise_mask")
             chunk_mask = _slice_mask(input_mask, vs, ve, samples) if input_mask is not None else None
             if reference_latent is not None:
                 reference_steps = min(chunk.overlap_steps, reference_latent.shape[2], chunk_latent.shape[2])
                 chunk_latent[:, :, :reference_steps] = reference_latent[:, :, -reference_steps:].to(chunk_latent)
-                chunk_noise[:, :, :reference_steps] = 0
                 if chunk_mask is None:
                     chunk_mask = torch.ones_like(chunk_latent[:, :1])
                 chunk_mask[:, :, :reference_steps] = 0
@@ -918,26 +900,25 @@ class Wan22TwoStageUnlimitedSampler:
                     tuple(chunk_mask.shape) if chunk_mask is not None else None,
                     _conditioning_debug(positive_chunk),
                 )
-            high_sigmas = _stage_sigmas(
-                high_model, steps, sampler_name, scheduler, high_start_at_step, high_end_at_step,
-                high_return_with_leftover_noise == "disable",
-            )
-            if len(high_sigmas) < 2:
-                raise ValueError("High-noise step range does not contain a sampling step")
+            chunk_input = latent_image.copy()
+            chunk_input["samples"] = chunk_latent
+            if chunk_mask is None:
+                chunk_input.pop("noise_mask", None)
+            else:
+                chunk_input["noise_mask"] = chunk_mask
+            local_chunk_frames = latent_steps_to_pixel_frames(chunk_latent.shape[2])
             if debug:
                 logging.info(
-                    "Wan chunk %d HIGH start: steps=%d range=%d->%d sample_count=%d sigmas=%s",
+                    "Wan chunk %d HIGH start: steps=%d range=%d->%d",
                     chunk.chunk_index + 1, steps, high_start_at_step, high_end_at_step,
-                    len(high_sigmas) - 1, high_sigmas.tolist(),
                 )
             stage_started = time.perf_counter()
-            high_samples = comfy.sample.sample(
-                high_model, chunk_noise, steps, cfg, sampler_name, scheduler,
-                positive_chunk, negative_chunk, chunk_latent,
-                disable_noise=high_add_noise == "disable", force_full_denoise=False,
-                noise_mask=chunk_mask, sigmas=high_sigmas,
-                disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
+            high_output, _ = _Wan22StandardUnlimitedSampler().execute(
+                high_model, high_add_noise, noise_seed, steps, cfg, sampler_name, scheduler,
+                positive_chunk, negative_chunk, chunk_input, high_start_at_step, high_end_at_step,
+                high_return_with_leftover_noise, local_chunk_frames, 0, False,
             )
+            high_samples = high_output["samples"]
             if debug:
                 logging.info(
                     "Wan chunk %d HIGH done in %.2fs output=%s mean=%.5f std=%.5f",
@@ -946,28 +927,18 @@ class Wan22TwoStageUnlimitedSampler:
                 )
             low_positive = _slice_standard_conditioning(positive, vs, ve, reference_latent)
             low_negative = _slice_standard_conditioning(negative, vs, ve, reference_latent)
-            low_sigmas = _stage_sigmas(
-                low_model, steps, sampler_name, scheduler, low_start_at_step, low_end_at_step,
-                low_return_with_leftover_noise == "disable",
-            )
-            if len(low_sigmas) < 2:
-                raise ValueError("Low-noise step range does not contain a sampling step")
             if debug:
                 logging.info(
-                    "Wan chunk %d LOW start: steps=%d range=%d->%d sample_count=%d sigmas=%s",
+                    "Wan chunk %d LOW start: steps=%d range=%d->%d",
                     chunk.chunk_index + 1, steps, low_start_at_step, low_end_at_step,
-                    len(low_sigmas) - 1, low_sigmas.tolist(),
                 )
-            low_noise = (comfy.sample.prepare_empty_noise(high_samples) if low_add_noise == "disable"
-                         else comfy.sample.prepare_noise(high_samples, noise_seed, latent_image.get("batch_index")))
             stage_started = time.perf_counter()
-            low_samples = comfy.sample.sample(
-                low_model, low_noise, steps, cfg, sampler_name, scheduler,
-                low_positive, low_negative, high_samples,
-                disable_noise=low_add_noise == "disable", force_full_denoise=False,
-                noise_mask=chunk_mask, sigmas=low_sigmas,
-                disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
+            low_output, _ = _Wan22StandardUnlimitedSampler().execute(
+                low_model, low_add_noise, noise_seed, steps, cfg, sampler_name, scheduler,
+                low_positive, low_negative, high_output, low_start_at_step, low_end_at_step,
+                low_return_with_leftover_noise, local_chunk_frames, 0, False,
             )
+            low_samples = low_output["samples"]
 
             if debug:
                 logging.info(
