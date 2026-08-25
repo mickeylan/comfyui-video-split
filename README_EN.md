@@ -10,6 +10,8 @@ Place the `comfyui-video-split` folder into the `custom_nodes/` directory and re
 
 ## Nodes
 
+### Core Segmentation Nodes
+
 | Node | Description |
 |------|-------------|
 | **Video Segment Info** | Calculate segment information |
@@ -17,12 +19,64 @@ Place the `comfyui-video-split` folder into the `custom_nodes/` directory and re
 | **Video Split (Multiple)** | Split video into all segments at once |
 | **Merge Video Segments** | Merge multiple segments |
 | **Image Collect** | Collect images in a loop |
+
+### Basic Editing Nodes
+
+| Node | Description |
+|------|-------------|
 | **Get Video Frame** | Get a single frame |
 | **Get Video Frames Range** | Get frames in a range |
 | **Video Crop** | Crop video |
 | **Image To Video** | Convert image to video |
 | **Video Scale** | Scale video |
 | **Video Info** | Get video info |
+
+### Wan 2.2 / Bernini Chunk Sampling
+
+| Node | Description |
+|------|-------------|
+| **Wan22 / Bernini Sampler Unlimited** | CustomAdvanced interface: `noise`, `guider`, `sampler`, `sigmas` |
+| **Wan22 / Bernini Low Noise Sampler Unlimited** | KSamplerAdvanced interface |
+| **Wan22 / Bernini High Noise Sampler Unlimited** | KSamplerAdvanced interface; connect Low Noise LATENT to `latent_image` |
+| **Wan22 Unlimited Preview** | Real-time preview using lighttaew2_2 TAESD |
+
+**Wan22 Frame Structure**: pixel frames = 1 + 4 × N (1 latent step = 4 pixel frames)
+
+**Parameters**:
+- `chunk_frames`: max pixel frames per chunk (1+4N format), default 128
+- `overlap_frames`: overlap pixel frames (guides from previous chunk), default 8 frames (2 latent steps)
+- `progressive_decode`: enable tiled VAE decode to CPU, reduces peak VRAM
+
+**I2V Continuity**: Subsequent chunks automatically inject the previous chunk's last frame into position 0, ensuring visual continuity.
+
+**VRAM Savings**:
+- Chunk sampling: ~50% VRAM
+- Progressive decode: ~30% peak VRAM reduction
+
+### LTX Video Chunk Sampling
+
+| Node | Description |
+|------|-------------|
+| **LTX VRAM Manager** | VRAM mode config, auto-detects GPU and recommends settings |
+| **LTX Video Optimized Decode** | bf16 forced VAE decode, significant speedup on Ampere+ GPUs |
+| **LTX Video Optimized Audio Decode** | Audio VAE decode |
+
+**LTX VRAM Manager**:
+- `vram_mode`: 16GB-safe (aggressive offload) / 24GB-fast (all on GPU) / balanced
+- `resolution_hint`: recommended resolution based on VRAM
+- Auto-prints recommended settings
+
+**12GB VRAM Recommended Config**:
+```
+chunk_frames: 33
+resolution: 1280x720
+--lowvram
+```
+
+**LTX Optimized Decode**:
+- Auto-detects Ampere+ GPUs
+- Handles AV joint latent
+- Does not move diffusion model (avoids --lowvram OOM)
 
 ## Node Details
 

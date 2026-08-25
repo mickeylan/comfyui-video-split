@@ -1270,7 +1270,139 @@ VHS Video Combine
 
 ---
 
-## 12. 常见问题
+## 12. Wan22 / Bernini 分块采样器
+
+### 12.1 节点列表
+
+| 节点 | 接口 | 说明 |
+|------|------|------|
+| **Wan22 Sampler Unlimited** | CustomAdvanced | 高级接口，需要连接 BasicGuider |
+| **Wan22 Low Noise Sampler Unlimited** | KSamplerAdvanced | 标准接口，从低噪节点输入 |
+| **Wan22 High Noise Sampler Unlimited** | KSamplerAdvanced | 标准接口，输出接高噪节点 |
+| **Wan22 Unlimited Preview** | 预览 | 实时预览，使用 TAESD 解码 |
+
+### 12.2 分块原理
+
+Wan22 的帧结构：**像素帧数 = 1 + 4 × N**（1 latent 步 = 4 像素帧）
+
+```
+chunk_frames = 129 → 129 像素帧 / 4 = 32 latent 步 + 1 起始帧
+```
+
+**重叠引导**：
+- `overlap_frames = 8` → 重叠 8 像素帧 = 2 latent 步
+- 后续段落 position 0 注入上一段的尾帧
+- 连续引导确保画面平滑过渡
+
+### 12.3 典型工作流
+
+**基础配置**：
+```
+Load Checkpoint
+    ↓
+CLIP Text Encode (positive)
+    ↓
+CLIP Text Encode (negative)
+    ↓
+Empty Latent Video (via Encode LotteGhost/Wan22 I2V)
+    ↓                              ↓
+Positive                      Negative
+    ↓                              ↓
+Basic Guider ──────────────→ Wan22 Sampler Unlimited
+    ↑                              ↓
+Model                      VAE Decode
+    ↓                              ↓
+Load Checkpoint             Save Image / Preview
+```
+
+**分块参数**：
+| 参数 | 默认值 | 12GB VRAM | 说明 |
+|------|--------|-----------|------|
+| chunk_frames | 128 | 128 | 每块像素帧数 |
+| overlap_frames | 8 | 8 | 重叠像素帧数 |
+| progressive_decode | False | True | 启用 tiled 解码 |
+
+### 12.4 I2V 连续性
+
+**问题**：分段生成时，后续段落会完全乱生成。
+
+**解决方案**：Wan22 Sampler Unlimited 会自动处理：
+
+1. **Latent 注入**：后续段落 position 0 = 上一段尾帧
+2. **Conditioning 注入**：`concat_latent_image` position 0 = 上一段尾帧
+3. **零噪声引导**：position 0 噪声设为 0，不参与 denoise
+
+```
+Chunk 1: [参考图] + [新生成] → 输出
+Chunk 2: [Chunk1尾帧] + [新生成] → 输出  ← 自动接续
+Chunk 3: [Chunk2尾帧] + [新生成] → 输出  ← 自动接续
+```
+
+### 12.5 VRAM 优化
+
+| 优化方式 | VRAM 节省 | 说明 |
+|---------|-----------|------|
+| 分块采样 | ~50% | 每块独立采样 |
+| 渐进式解码 | ~30% | 边采样边解码 |
+| --lowvram | ~40% | ComfyUI 自动 offload |
+
+**12GB VRAM 推荐配置**：
+```
+chunk_frames: 128 (720p)
+overlap_frames: 8
+progressive_decode: True
+--lowvram
+```
+
+---
+
+## 13. LTX Video 分块采样器
+
+### 13.1 节点列表
+
+| 节点 | 说明 |
+|------|------|
+| **LTX VRAM Manager** | VRAM 模式配置，自动检测显卡 |
+| **LTX Video Optimized Decode** | bf16 强制 VAE 解码 |
+| **LTX Video Optimized Audio Decode** | 音频 VAE 解码 |
+
+### 13.2 VRAM 管理器
+
+**功能**：
+- 自动检测显卡型号和显存
+- 推荐 VRAM 模式（16GB-safe / 24GB-fast / balanced）
+- 打印推荐分辨率和 chunk_frames
+
+**VRAM 模式**：
+| 模式 | 适用显存 | 策略 |
+|------|---------|------|
+| 16GB-safe | 14-22GB | 激进 offload |
+| 24GB-fast | ≥22GB | 全部驻留 GPU |
+| balanced | <14GB | 平衡 offloading |
+
+### 13.3 bf16 优化解码
+
+**支持显卡**：
+- RTX 30/40 系列 (Ampere+) ✅
+- RTX 50 系列 (Blackwell) ✅
+- 更老的显卡：自动禁用
+
+**优势**：
+- Ampere+ GPU 显著加速
+- 降低显存占用
+- 不影响采样质量
+
+### 13.4 12GB VRAM 配置
+
+```
+chunk_frames: 33
+resolution: 1280x720
+--lowvram
+```
+
+---
+
+## 14. 常见问题
 
 ### Q1: 中文文字显示乱码？
 

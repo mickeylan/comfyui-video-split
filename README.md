@@ -71,6 +71,9 @@
 |---------|------|
 | **VideoSplit SamplerCustomAdvanced** | LTX 分块采样器，解决高分辨率长视频的 VRAM 问题 |
 | **VideoSplit VRAMEstimator** | VRAM 估算器，估算显存需求 |
+| **VideoSplit LTX VRAM Manager** | VRAM 模式配置，自动检测显卡推荐参数 |
+| **VideoSplit LTX Optimized Decode** | bf16 强制 VAE 解码，Ampere+ GPU 显著加速 |
+| **VideoSplit LTX Optimized Audio Decode** | 音频 VAE 解码 |
 
 ### Wan 2.2 / Bernini 分块采样
 
@@ -79,8 +82,45 @@
 | **Wan22 / Bernini Sampler Unlimited** | 原有 Custom Sampler 高级 `noise`、`guider`、`sampler`、`sigmas` 接口。 |
 | **Wan22 / Bernini Low Noise Sampler Unlimited** | 标准 KSamplerAdvanced 接口的单模型分块采样器。 |
 | **Wan22 / Bernini High Noise Sampler Unlimited** | 标准 KSamplerAdvanced 接口的单模型分块采样器；将低噪节点的 LATENT 输出接到 `latent_image`。 |
+| **Wan22 Unlimited Preview** | 实时预览节点，使用 lighttaew2_2 TAESD 解码。 |
 
-低噪和高噪节点都保留 `model`、`add_noise`、`noise_seed`、`steps`、`cfg`、`sampler_name`、`scheduler`、`positive`、`negative`、`latent_image`、`start_at_step`、`end_at_step`、`return_with_leftover_noise`，另加 `chunk_frames` 和 `overlap_frames`。音频 conditioning 不支持。
+**Wan22 帧结构**: 像素帧数 = 1 + 4 × N（1 latent 步 = 4 像素帧）
+
+**参数说明**:
+- `chunk_frames`: 每块最大像素帧数（1+4N 格式），默认 128，建议 720p 用 128，540p 用 256
+- `overlap_frames`: 重叠像素帧数（引导前一块的末帧），默认 8 帧 (2 latent 步)
+- `progressive_decode`: 启用 tiled VAE 解码到 CPU，降低峰值显存
+
+**I2V 连续性**: 后续段落会自动将上一段的尾帧注入到当前段落的 position 0，确保画面连续。
+
+**VRAM 节省**:
+- 分块采样: ~50% 显存
+- 渐进式解码: ~30% 峰值显存
+
+### LTX Video 分块采样
+
+| 节点名称 | 功能 |
+|---------|------|
+| **LTX VRAM Manager** | VRAM 模式配置，自动检测显卡推荐参数。 |
+| **LTX Video Optimized Decode** | bf16 强制 VAE 解码，Ampere+ GPU 显著加速。 |
+| **LTX Video Optimized Audio Decode** | 音频 VAE 解码。 |
+
+**LTX VRAM Manager**:
+- `vram_mode`: 16GB-safe（激进 offload）/ 24GB-fast（全部驻留）/ balanced
+- `resolution_hint`: 根据显存推荐分辨率
+- 自动打印推荐配置
+
+**12GB VRAM 推荐配置**:
+```
+chunk_frames: 33
+resolution: 1280x720
+--lowvram
+```
+
+**LTX 优化解码**:
+- 自动检测 Ampere+ GPU
+- 处理 AV 联合 latent
+- 不移动 diffusion model（避免 --lowvram OOM）
 
 ### 文字/字幕节点 📝
 
