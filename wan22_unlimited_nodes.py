@@ -684,11 +684,11 @@ def _slice_standard_conditioning(conditioning, video_start, video_end, reference
         metadata = metadata.copy()
         if "audio_embed" in metadata:
             raise ValueError("Wan22 unlimited sampler does not support audio conditioning")
-        for key in ("concat_latent_image", "concat_mask", "control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
-            value = metadata.get(key)
-            if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
-                metadata[key] = value[:, :, video_start:video_end].clone()
         if reference_latent is not None:
+            for key in ("concat_latent_image", "concat_mask"):
+                value = metadata.get(key)
+                if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
+                    metadata[key] = value[:, :, video_start:video_end].clone()
             concat_image = metadata.get("concat_latent_image")
             concat_mask = metadata.get("concat_mask")
             if torch.is_tensor(concat_image) and concat_image.shape[1] == reference_latent.shape[1]:
@@ -696,6 +696,10 @@ def _slice_standard_conditioning(conditioning, video_start, video_end, reference
                 concat_image[:, :, :reference_steps] = reference_latent[:, :, :reference_steps].to(concat_image)
                 if torch.is_tensor(concat_mask):
                     concat_mask[:, :, :reference_steps] = 0
+        for key in ("control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
+            value = metadata.get(key)
+            if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
+                metadata[key] = value[:, :, video_start:video_end].clone()
         for key in ("vace_frames", "vace_mask"):
             value = metadata.get(key)
             if value is not None:
