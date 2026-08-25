@@ -156,6 +156,53 @@ def _conditioning_for_chunk(original_conds, video_start, video_end, tokens_per_f
     return chunk_conds
 
 
+def _conditioning_for_chunk_with_reference(original_conds, video_start, video_end, tokens_per_frame, reference_video):
+    """裁剪条件到当前分块的时间范围，并用上一块的尾帧更新 I2V 参考"""
+    chunk_conds = {}
+    for name, conditioning in original_conds.items():
+        entries = []
+        for cond in conditioning:
+            cond = cond.copy()
+            cond.pop("keyframe_idxs", None)
+            cond.pop("guide_attention_entries", None)
+            generated = cond.get("generated_keyframes")
+            if generated is not None:
+                first = generated["first_latent_frame"]
+                last = first + generated["num_keyframes"]
+                local_start = max(first, video_start)
+                local_end = min(last, video_end)
+                if local_start < local_end:
+                    cond["generated_keyframes"] = {
+                        **generated,
+                        "first_latent_frame": local_start - video_start,
+                        "num_keyframes": local_end - local_start,
+                        "tokens_per_frame": tokens_per_frame,
+                    }
+                else:
+                    cond.pop("generated_keyframes", None)
+
+            # Handle concat_latent_image for I2V continuity
+            concat_image = cond.get("concat_latent_image")
+            concat_mask = cond.get("concat_mask")
+            if torch.is_tensor(concat_image) and concat_image.ndim == 5 and concat_image.shape[2] >= video_end:
+                chunk_image = concat_image[:, :, video_start:video_end].clone()
+                # 替换 position 0 为参考帧（上一块的尾帧）
+                if video_start > 0 and reference_video is not None:
+                    # 取参考帧的 latent 表示（通常是第一个通道）
+                    ref_frame = reference_video[:, :16, -1:] if reference_video.shape[1] >= 16 else reference_video[:, :, -1:]
+                    chunk_image[:, :, :1] = ref_frame.to(chunk_image)
+                cond["concat_latent_image"] = chunk_image
+            if torch.is_tensor(concat_mask) and concat_mask.ndim == 5 and concat_mask.shape[2] >= video_end:
+                chunk_mask = concat_mask[:, :, video_start:video_end].clone()
+                if video_start > 0:
+                    chunk_mask[:, :, :1] = 0
+                cond["concat_mask"] = chunk_mask
+
+            entries.append(cond)
+        chunk_conds[name] = entries
+    return chunk_conds
+
+
 class _PreparedGuiderSession:
     def __init__(self, guider, sampler, sigmas, representative_noise, representative_conds):
         self.guider = guider
@@ -541,12 +588,24 @@ class LTXVUnlimitedSampler:
                         0 if chunk.is_first else chunk.overlap_video_steps,
                     )
                 
-                chunk_conds = _conditioning_for_chunk(
-                    original_conds,
-                    vs,
-                    ve,
-                    chunk_video.shape[3] * chunk_video.shape[4],
-                )
+                # 后续段落需要传入参考帧更新条件
+                if chunk.is_first:
+                    chunk_conds = _conditioning_for_chunk(
+                        original_conds,
+                        vs,
+                        ve,
+                        chunk_video.shape[3] * chunk_video.shape[4],
+                    )
+                else:
+                    # 传入上一块的尾帧作为参考
+                    ref_video = previous_video if previous_video is not None else None
+                    chunk_conds = _conditioning_for_chunk_with_reference(
+                        original_conds,
+                        vs,
+                        ve,
+                        chunk_video.shape[3] * chunk_video.shape[4],
+                        ref_video,
+                    )
 
                 try:
                     sampled, denoised = prepared.sample(
