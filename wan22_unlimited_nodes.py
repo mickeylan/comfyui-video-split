@@ -630,9 +630,16 @@ class Wan22UnlimitedSampler:
                 # Save overlap frames for next chunk.
                 # The last frame will be used as the "reference" at position 0.
                 # The remaining overlap frames will be used as overlap context from position 1.
+                # We need overlap_steps + 1 frames (reference + overlap context).
+                # If not enough frames, pad with the last frame.
                 if overlap_frames > 0 and out_video.shape[2]:
-                    save_len = min(overlap_frames // 4 + 1, out_video.shape[2])  # +1 for the reference frame
-                    saved_frames = out_video[:, :, -save_len:].detach().cpu()
+                    save_len = chunk.overlap_steps + 1
+                    if out_video.shape[2] >= save_len:
+                        saved_frames = out_video[:, :, -save_len:].detach().cpu()
+                    else:
+                        # Pad with the last frame
+                        last_frame = out_video[:, :, -1:]
+                        saved_frames = torch.cat([last_frame] * save_len, dim=2).detach().cpu()
                     reference_frame = saved_frames[:, :, -1:]  # Last frame = reference for next chunk
                     previous_video = saved_frames[:, :, :-1] if save_len > 1 else None  # Rest = overlap context
                 else:
@@ -859,9 +866,16 @@ class _Wan22StandardUnlimitedSampler:
             # Save overlap frames for next chunk.
             # The last frame will be used as the "reference" at position 0.
             # The remaining overlap frames will be used as overlap context from position 1.
+            # We need overlap_steps + 1 frames (reference + overlap context).
+            # If not enough frames, pad with the last frame.
             if overlap_frames > 0 and output.shape[2]:
-                save_len = min(overlap_frames // 4 + 1, output.shape[2])  # +1 for the reference frame
-                saved_frames = output[:, :, -save_len:].detach().cpu()
+                save_len = chunk.overlap_steps + 1
+                if output.shape[2] >= save_len:
+                    saved_frames = output[:, :, -save_len:].detach().cpu()
+                else:
+                    # Pad with the last frame
+                    last_frame = output[:, :, -1:].detach().cpu()
+                    saved_frames = torch.cat([last_frame] * save_len, dim=2)
                 reference_frame = saved_frames[:, :, -1:]  # Last frame = reference for next chunk
                 previous_video = saved_frames[:, :, :-1] if save_len > 1 else None  # Rest = overlap context
             else:
