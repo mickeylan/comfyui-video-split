@@ -674,6 +674,10 @@ class Wan22UnlimitedSampler:
     sample = execute
 
 
+def _encode_video_frames(vae, frames):
+    return torch.cat([vae.encode(video) for video in frames], dim=0)
+
+
 def _slice_standard_conditioning(conditioning, video_start, video_end, reference_latent=None):
     sliced = []
     for cross_attn, metadata in conditioning:
@@ -890,7 +894,7 @@ class Wan22TwoStageUnlimitedSampler:
             if chunk.chunk_index + 1 < len(chunks) and chunk.overlap_steps:
                 decoded = vae.decode(low_output)
                 context_frames = 1 + 4 * (chunk.overlap_steps - 1)
-                reference_latent = vae.encode(decoded[:, -context_frames:]).detach().cpu()
+                reference_latent = _encode_video_frames(vae, decoded[:, -context_frames:]).detach().cpu()
             else:
                 reference_latent = None
             chunk_infos.append(
