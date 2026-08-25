@@ -30,6 +30,7 @@ import comfy.patcher_extension
 import comfy.sampler_helpers
 import comfy.samplers
 import latent_preview
+import nodes
 
 from .preview import begin_preview_execution
 
@@ -871,8 +872,6 @@ class Wan22TwoStageUnlimitedSampler:
                 f"got {vae.latent_channels} channels with latent_dim={vae.latent_dim}"
             )
 
-        full_noise = (comfy.sample.prepare_empty_noise(samples) if high_add_noise == "disable"
-                      else comfy.sample.prepare_noise(samples, noise_seed, latent_image.get("batch_index")))
         chunks = _chunk_plan(samples.shape[2], max(5, align_pixel_frames_to_chunk(chunk_frames)), overlap_frames)
         output_video = []
         reference_latent = None
@@ -881,13 +880,11 @@ class Wan22TwoStageUnlimitedSampler:
         for chunk in chunks:
             vs, ve = chunk.video_start, chunk.video_end
             chunk_latent = samples[:, :, vs:ve].clone()
-            chunk_noise = full_noise[:, :, vs:ve].clone()
             input_mask = latent_image.get("noise_mask")
             chunk_mask = _slice_mask(input_mask, vs, ve, samples) if input_mask is not None else None
             if reference_latent is not None:
                 reference_steps = min(chunk.overlap_steps, reference_latent.shape[2], chunk_latent.shape[2])
                 chunk_latent[:, :, :reference_steps] = reference_latent[:, :, -reference_steps:].to(chunk_latent)
-                chunk_noise[:, :, :reference_steps] = 0
                 if chunk_mask is None:
                     chunk_mask = torch.ones_like(chunk_latent[:, :1])
                 chunk_mask[:, :, :reference_steps] = 0
@@ -896,55 +893,57 @@ class Wan22TwoStageUnlimitedSampler:
             negative_chunk = _slice_standard_conditioning(negative, vs, ve, reference_latent)
             if debug:
                 logging.info(
-                    "Wan chunk %d/%d input=%s noise=%s noise_mask=%s positive=%s",
+                    "Wan chunk %d/%d input=%s noise_mask=%s positive=%s",
                     chunk.chunk_index + 1,
                     len(chunks),
                     tuple(chunk_latent.shape),
-                    tuple(chunk_noise.shape),
                     tuple(chunk_mask.shape) if chunk_mask is not None else None,
                     _conditioning_debug(positive_chunk),
                 )
-            high_output = comfy.sample.sample(
-                high_model, chunk_noise, steps, cfg, sampler_name, scheduler,
-                positive_chunk, negative_chunk, chunk_latent,
+            high_latent = latent_image.copy()
+            high_latent["samples"] = chunk_latent
+            if chunk_mask is None:
+                high_latent.pop("noise_mask", None)
+            else:
+                high_latent["noise_mask"] = chunk_mask
+            high_output = nodes.common_ksampler(
+                high_model, noise_seed, steps, cfg, sampler_name, scheduler,
+                positive_chunk, negative_chunk, high_latent,
                 disable_noise=high_add_noise == "disable", start_step=high_start_at_step,
                 last_step=high_end_at_step,
                 force_full_denoise=high_return_with_leftover_noise == "disable",
-                noise_mask=chunk_mask, disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
-            )
+            )[0]
             if debug:
                 logging.info(
                     "Wan chunk %d high output=%s mean=%.5f std=%.5f",
                     chunk.chunk_index + 1,
-                    tuple(high_output.shape),
-                    high_output.float().mean().item(),
-                    high_output.float().std().item(),
+                    tuple(high_output["samples"].shape),
+                    high_output["samples"].float().mean().item(),
+                    high_output["samples"].float().std().item(),
                 )
-            low_noise = (comfy.sample.prepare_empty_noise(high_output) if low_add_noise == "disable"
-                         else comfy.sample.prepare_noise(high_output, noise_seed, latent_image.get("batch_index")))
             low_positive = _slice_standard_conditioning(positive, vs, ve, reference_latent)
             low_negative = _slice_standard_conditioning(negative, vs, ve, reference_latent)
-            low_output = comfy.sample.sample(
-                low_model, low_noise, steps, cfg, sampler_name, scheduler,
+            low_output = nodes.common_ksampler(
+                low_model, noise_seed, steps, cfg, sampler_name, scheduler,
                 low_positive, low_negative, high_output,
                 disable_noise=low_add_noise == "disable", start_step=low_start_at_step,
                 last_step=low_end_at_step,
                 force_full_denoise=low_return_with_leftover_noise == "disable",
-                noise_mask=chunk_mask, disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
-            )
+            )[0]
+            low_samples = low_output["samples"]
 
             if debug:
                 logging.info(
                     "Wan chunk %d low output=%s mean=%.5f std=%.5f",
                     chunk.chunk_index + 1,
-                    tuple(low_output.shape),
-                    low_output.float().mean().item(),
-                    low_output.float().std().item(),
+                    tuple(low_samples.shape),
+                    low_samples.float().mean().item(),
+                    low_samples.float().std().item(),
                 )
-            output_video.append(low_output[:, :, chunk.overlap_steps:].detach().cpu())
+            output_video.append(low_samples[:, :, chunk.overlap_steps:].detach().cpu())
             next_overlap_steps = chunks[chunk.chunk_index + 1].overlap_steps if chunk.chunk_index + 1 < len(chunks) else 0
             if next_overlap_steps:
-                decoded = vae.decode(low_output)
+                decoded = vae.decode(low_samples)
                 context_frames = 1 + 4 * (next_overlap_steps - 1)
                 reference_latent = _encode_video_frames(vae, decoded[:, -context_frames:]).detach().cpu()
                 if debug:
