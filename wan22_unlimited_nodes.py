@@ -882,11 +882,14 @@ class Wan22TwoStageUnlimitedSampler:
             vs, ve = chunk.video_start, chunk.video_end
             chunk_latent = samples[:, :, vs:ve].clone()
             chunk_noise = full_noise[:, :, vs:ve].clone()
-            chunk_mask = _slice_mask(latent_image.get("noise_mask"), vs, ve, samples)
+            input_mask = latent_image.get("noise_mask")
+            chunk_mask = _slice_mask(input_mask, vs, ve, samples) if input_mask is not None else None
             if reference_latent is not None:
                 reference_steps = min(chunk.overlap_steps, reference_latent.shape[2], chunk_latent.shape[2])
                 chunk_latent[:, :, :reference_steps] = reference_latent[:, :, -reference_steps:].to(chunk_latent)
                 chunk_noise[:, :, :reference_steps] = 0
+                if chunk_mask is None:
+                    chunk_mask = torch.ones_like(chunk_latent[:, :1])
                 chunk_mask[:, :, :reference_steps] = 0
 
             positive_chunk = _slice_standard_conditioning(positive, vs, ve, reference_latent)
@@ -898,7 +901,7 @@ class Wan22TwoStageUnlimitedSampler:
                     len(chunks),
                     tuple(chunk_latent.shape),
                     tuple(chunk_noise.shape),
-                    tuple(chunk_mask.shape),
+                    tuple(chunk_mask.shape) if chunk_mask is not None else None,
                     _conditioning_debug(positive_chunk),
                 )
             high_output = comfy.sample.sample(
