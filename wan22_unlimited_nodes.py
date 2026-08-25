@@ -17,11 +17,11 @@ Wan22 关键参数:
 """
 
 import logging
-import time
 from dataclasses import dataclass
 
 import torch
 
+import nodes
 import comfy
 import comfy.hooks
 import comfy.model_patcher
@@ -31,7 +31,6 @@ import comfy.patcher_extension
 import comfy.sampler_helpers
 import comfy.samplers
 import latent_preview
-import nodes
 
 from .preview import begin_preview_execution
 
@@ -676,45 +675,13 @@ class Wan22UnlimitedSampler:
     sample = execute
 
 
-def _encode_video_frames(vae, frames):
-    return torch.cat([vae.encode(video) for video in frames], dim=0)
-
-
-def _conditioning_debug(conditioning):
-    for _, metadata in conditioning:
-        concat_image = metadata.get("concat_latent_image")
-        concat_mask = metadata.get("concat_mask")
-        if torch.is_tensor(concat_image):
-            image_info = f"image={tuple(concat_image.shape)} mean={concat_image.float().mean().item():.5f}"
-        else:
-            image_info = "image=None"
-        if torch.is_tensor(concat_mask):
-            mask_info = f"mask={tuple(concat_mask.shape)} mean={concat_mask.float().mean().item():.5f}"
-        else:
-            mask_info = "mask=None"
-        return f"{image_info} {mask_info}"
-    return "empty conditioning"
-
-
-def _slice_standard_conditioning(conditioning, video_start, video_end, reference_latent=None):
+def _slice_standard_conditioning(conditioning, video_start, video_end):
     sliced = []
     for cross_attn, metadata in conditioning:
         metadata = metadata.copy()
         if "audio_embed" in metadata:
             raise ValueError("Wan22 unlimited sampler does not support audio conditioning")
-        for key in ("concat_latent_image", "concat_mask"):
-            value = metadata.get(key)
-            if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
-                metadata[key] = value[:, :, video_start:video_end].clone()
-        if reference_latent is not None:
-            concat_image = metadata.get("concat_latent_image")
-            concat_mask = metadata.get("concat_mask")
-            if torch.is_tensor(concat_image) and concat_image.shape[1] == reference_latent.shape[1]:
-                reference_steps = min(reference_latent.shape[2], concat_image.shape[2])
-                concat_image[:, :, :reference_steps] = reference_latent[:, :, :reference_steps].to(concat_image)
-                if torch.is_tensor(concat_mask):
-                    concat_mask[:, :, :reference_steps] = 0
-        for key in ("control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
+        for key in ("concat_latent_image", "concat_mask", "control_video", "camera_conditions", "denoise_mask", "pose_video_latent"):
             value = metadata.get(key)
             if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
                 metadata[key] = value[:, :, video_start:video_end].clone()
@@ -722,6 +689,9 @@ def _slice_standard_conditioning(conditioning, video_start, video_end, reference
             value = metadata.get(key)
             if value is not None:
                 metadata[key] = [item[:, :, video_start:video_end].clone() if item.ndim == 5 and item.shape[2] >= video_end else item for item in value]
+        context = metadata.get("context_latents")
+        if context is not None:
+            metadata["context_latents"] = [item[:, :, video_start:video_end].clone() if item.ndim == 5 and item.shape[2] >= video_end else item for item in context]
         sliced.append([cross_attn, metadata])
     return sliced
 
@@ -816,7 +786,7 @@ class _Wan22StandardUnlimitedSampler:
         return (final_output, "\n".join(chunk_infos))
 
 
-class Wan22TwoStageUnlimitedSampler:
+class Wan22TwoStageSingleChunkSampler:
     @classmethod
     def INPUT_TYPES(cls):
         stage_noise = (["enable", "disable"], {"advanced": True})
@@ -824,7 +794,6 @@ class Wan22TwoStageUnlimitedSampler:
         return {"required": {
             "high_model": ("MODEL",),
             "low_model": ("MODEL",),
-            "vae": ("VAE",),
             "positive": ("CONDITIONING",),
             "negative": ("CONDITIONING",),
             "latent_image": ("LATENT",),
@@ -841,42 +810,22 @@ class Wan22TwoStageUnlimitedSampler:
             "low_start_at_step": ("INT", {"default": 10, "min": 0, "max": 10000, "advanced": True}),
             "low_end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000, "advanced": True}),
             "low_return_with_leftover_noise": stage_leftover,
-            "chunk_frames": ("INT", {"default": 33, "min": 5, "max": 1024, "step": 4}),
-            "overlap_frames": ("INT", {"default": 8, "min": 0, "max": 256, "step": 4}),
-        }, "optional": {"debug": ("BOOLEAN", {"default": False})}}
+        }}
 
-    RETURN_TYPES = ("LATENT", "STRING")
-    RETURN_NAMES = ("output", "chunk_info")
+    RETURN_TYPES = ("LATENT",)
     FUNCTION = "execute"
     CATEGORY = "video/split"
 
-    def execute(self, high_model, low_model, vae, positive, negative, latent_image, noise_seed, steps, cfg,
+    def execute(self, high_model, low_model, positive, negative, latent_image, noise_seed, steps, cfg,
                 sampler_name, scheduler, high_add_noise, high_start_at_step, high_end_at_step,
                 high_return_with_leftover_noise, low_add_noise, low_start_at_step, low_end_at_step,
-                low_return_with_leftover_noise, chunk_frames, overlap_frames, debug=False):
+                low_return_with_leftover_noise):
         if not 0 <= high_start_at_step <= high_end_at_step:
             raise ValueError("High-noise steps must satisfy 0 <= start_at_step <= end_at_step")
         if not 0 <= low_start_at_step <= low_end_at_step:
             raise ValueError("Low-noise steps must satisfy 0 <= start_at_step <= end_at_step")
 
-        samples = comfy.sample.fix_empty_latent_channels(
-            high_model,
-            latent_image["samples"],
-            latent_image.get("downscale_ratio_spacial"),
-            latent_image.get("downscale_ratio_temporal"),
-        )
-        if samples.is_nested or samples.ndim != 5:
-            raise ValueError("Wan22 two-stage unlimited sampler requires one video latent [B,C,T,H,W]")
-        if vae.latent_dim != 3 or vae.latent_channels != samples.shape[1]:
-            raise ValueError(
-                f"The connected Wan VAE must encode {samples.shape[1]}-channel video latents; "
-                f"got {vae.latent_channels} channels with latent_dim={vae.latent_dim}"
-            )
-
-        chunks = _chunk_plan(samples.shape[2], max(5, align_pixel_frames_to_chunk(chunk_frames)), overlap_frames)
-        if len(chunks) == 1:
-            if debug:
-                logging.info("Wan single chunk: using the native KSamplerAdvanced path without slicing")
+        try:
             high_output = nodes.common_ksampler(
                 high_model, noise_seed, steps, cfg, sampler_name, scheduler,
                 positive, negative, latent_image,
@@ -885,121 +834,22 @@ class Wan22TwoStageUnlimitedSampler:
                 last_step=high_end_at_step,
                 force_full_denoise=high_return_with_leftover_noise == "disable",
             )[0]
-            low_output = nodes.common_ksampler(
+        finally:
+            comfy.model_management.unload_model_and_clones(high_model, all_devices=True)
+            comfy.model_management.soft_empty_cache()
+
+        try:
+            return nodes.common_ksampler(
                 low_model, noise_seed, steps, cfg, sampler_name, scheduler,
                 positive, negative, high_output,
                 disable_noise=low_add_noise == "disable",
                 start_step=low_start_at_step,
                 last_step=low_end_at_step,
                 force_full_denoise=low_return_with_leftover_noise == "disable",
-            )[0]
-            return (low_output, f"Single chunk: latent [0, {samples.shape[2]})")
-
-        output_video = []
-        reference_latent = None
-        chunk_infos = []
-
-        for chunk in chunks:
-            vs, ve = chunk.video_start, chunk.video_end
-            chunk_latent = samples[:, :, vs:ve].clone()
-            input_mask = latent_image.get("noise_mask")
-            chunk_mask = _slice_mask(input_mask, vs, ve, samples) if input_mask is not None else None
-            if reference_latent is not None:
-                reference_steps = min(chunk.overlap_steps, reference_latent.shape[2], chunk_latent.shape[2])
-                chunk_latent[:, :, :reference_steps] = reference_latent[:, :, -reference_steps:].to(chunk_latent)
-                if chunk_mask is None:
-                    chunk_mask = torch.ones_like(chunk_latent[:, :1])
-                chunk_mask[:, :, :reference_steps] = 0
-
-            positive_chunk = _slice_standard_conditioning(positive, vs, ve, reference_latent)
-            negative_chunk = _slice_standard_conditioning(negative, vs, ve, reference_latent)
-            if debug:
-                logging.info(
-                    "Wan chunk %d/%d input=%s noise_mask=%s positive=%s",
-                    chunk.chunk_index + 1,
-                    len(chunks),
-                    tuple(chunk_latent.shape),
-                    tuple(chunk_mask.shape) if chunk_mask is not None else None,
-                    _conditioning_debug(positive_chunk),
-                )
-            chunk_input = latent_image.copy()
-            chunk_input["samples"] = chunk_latent
-            if chunk_mask is None:
-                chunk_input.pop("noise_mask", None)
-            else:
-                chunk_input["noise_mask"] = chunk_mask
-            local_chunk_frames = latent_steps_to_pixel_frames(chunk_latent.shape[2])
-            if debug:
-                logging.info(
-                    "Wan chunk %d HIGH start: steps=%d range=%d->%d",
-                    chunk.chunk_index + 1, steps, high_start_at_step, high_end_at_step,
-                )
-            stage_started = time.perf_counter()
-            high_output, _ = _Wan22StandardUnlimitedSampler().execute(
-                high_model, high_add_noise, noise_seed, steps, cfg, sampler_name, scheduler,
-                positive_chunk, negative_chunk, chunk_input, high_start_at_step, high_end_at_step,
-                high_return_with_leftover_noise, local_chunk_frames, 0, False,
             )
-            high_samples = high_output["samples"]
-            if debug:
-                logging.info(
-                    "Wan chunk %d HIGH done in %.2fs output=%s mean=%.5f std=%.5f",
-                    chunk.chunk_index + 1, time.perf_counter() - stage_started,
-                    tuple(high_samples.shape), high_samples.float().mean().item(), high_samples.float().std().item(),
-                )
-            low_positive = _slice_standard_conditioning(positive, vs, ve, reference_latent)
-            low_negative = _slice_standard_conditioning(negative, vs, ve, reference_latent)
-            if debug:
-                logging.info(
-                    "Wan chunk %d LOW start: steps=%d range=%d->%d",
-                    chunk.chunk_index + 1, steps, low_start_at_step, low_end_at_step,
-                )
-            stage_started = time.perf_counter()
-            low_output, _ = _Wan22StandardUnlimitedSampler().execute(
-                low_model, low_add_noise, noise_seed, steps, cfg, sampler_name, scheduler,
-                low_positive, low_negative, high_output, low_start_at_step, low_end_at_step,
-                low_return_with_leftover_noise, local_chunk_frames, 0, False,
-            )
-            low_samples = low_output["samples"]
-
-            if debug:
-                logging.info(
-                    "Wan chunk %d LOW done in %.2fs output=%s mean=%.5f std=%.5f",
-                    chunk.chunk_index + 1,
-                    time.perf_counter() - stage_started,
-                    tuple(low_samples.shape),
-                    low_samples.float().mean().item(),
-                    low_samples.float().std().item(),
-                )
-            output_video.append(low_samples[:, :, chunk.overlap_steps:].detach().cpu())
-            next_overlap_steps = chunks[chunk.chunk_index + 1].overlap_steps if chunk.chunk_index + 1 < len(chunks) else 0
-            if next_overlap_steps:
-                decoded = vae.decode(low_samples)
-                context_frames = 1 + 4 * (next_overlap_steps - 1)
-                reference_latent = _encode_video_frames(vae, decoded[:, -context_frames:]).detach().cpu()
-                if debug:
-                    logging.info(
-                        "Wan chunk %d continuation pixels=%s latent=%s mean=%.5f std=%.5f",
-                        chunk.chunk_index + 1,
-                        tuple(decoded[:, -context_frames:].shape),
-                        tuple(reference_latent.shape),
-                        reference_latent.float().mean().item(),
-                        reference_latent.float().std().item(),
-                    )
-            else:
-                reference_latent = None
-            chunk_infos.append(
-                f"Chunk {chunk.chunk_index + 1}/{len(chunks)}: latent [{vs}, {ve}), "
-                f"overlap={chunk.overlap_frames}f"
-            )
-
-        final_output = latent_image.copy()
-        final_output.pop("downscale_ratio_spacial", None)
-        final_output.pop("downscale_ratio_temporal", None)
-        final_output["samples"] = torch.cat(output_video, dim=2)
-        if debug:
-            logging.info("Wan22 two-stage unlimited sampler:\n%s", "\n".join(chunk_infos))
-        return (final_output, "\n".join(chunk_infos))
+        finally:
+            comfy.model_management.unload_model_and_clones(low_model, all_devices=True)
+            comfy.model_management.soft_empty_cache()
 
 
 class Wan22LowNoiseUnlimitedSampler(_Wan22StandardUnlimitedSampler):
@@ -1073,15 +923,15 @@ if HAS_IO_LATEST:
 
 WAN22_NODE_CLASS_MAPPINGS = {
     "Wan22UnlimitedSampler": Wan22UnlimitedSampler,
-    "Wan22TwoStageUnlimitedSampler": Wan22TwoStageUnlimitedSampler,
     "Wan22LowNoiseUnlimitedSampler": Wan22LowNoiseUnlimitedSampler,
     "Wan22HighNoiseUnlimitedSampler": Wan22HighNoiseUnlimitedSampler,
+    "Wan22TwoStageSingleChunkSampler": Wan22TwoStageSingleChunkSampler,
 }
 WAN22_NODE_DISPLAY_NAME_MAPPINGS = {
     "Wan22UnlimitedSampler": "Wan22 / Bernini Sampler Unlimited",
-    "Wan22TwoStageUnlimitedSampler": "Wan22 Two-Stage I2V Sampler Unlimited",
     "Wan22LowNoiseUnlimitedSampler": "Wan22 / Bernini Low Noise Sampler Unlimited",
     "Wan22HighNoiseUnlimitedSampler": "Wan22 / Bernini High Noise Sampler Unlimited",
+    "Wan22TwoStageSingleChunkSampler": "Wan22 Two-Stage Single Chunk Sampler",
 }
 
 if HAS_IO_LATEST:
