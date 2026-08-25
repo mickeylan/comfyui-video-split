@@ -678,6 +678,22 @@ def _encode_video_frames(vae, frames):
     return torch.cat([vae.encode(video) for video in frames], dim=0)
 
 
+def _conditioning_debug(conditioning):
+    for _, metadata in conditioning:
+        concat_image = metadata.get("concat_latent_image")
+        concat_mask = metadata.get("concat_mask")
+        if torch.is_tensor(concat_image):
+            image_info = f"image={tuple(concat_image.shape)} mean={concat_image.float().mean().item():.5f}"
+        else:
+            image_info = "image=None"
+        if torch.is_tensor(concat_mask):
+            mask_info = f"mask={tuple(concat_mask.shape)} mean={concat_mask.float().mean().item():.5f}"
+        else:
+            mask_info = "mask=None"
+        return f"{image_info} {mask_info}"
+    return "empty conditioning"
+
+
 def _slice_standard_conditioning(conditioning, video_start, video_end, reference_latent=None):
     sliced = []
     for cross_attn, metadata in conditioning:
@@ -875,6 +891,16 @@ class Wan22TwoStageUnlimitedSampler:
 
             positive_chunk = _slice_standard_conditioning(positive, vs, ve, reference_latent)
             negative_chunk = _slice_standard_conditioning(negative, vs, ve, reference_latent)
+            if debug:
+                logging.info(
+                    "Wan chunk %d/%d input=%s noise=%s noise_mask=%s positive=%s",
+                    chunk.chunk_index + 1,
+                    len(chunks),
+                    tuple(chunk_latent.shape),
+                    tuple(chunk_noise.shape),
+                    tuple(chunk_mask.shape),
+                    _conditioning_debug(positive_chunk),
+                )
             high_output = comfy.sample.sample(
                 high_model, chunk_noise, steps, cfg, sampler_name, scheduler,
                 positive_chunk, negative_chunk, chunk_latent,
@@ -883,22 +909,49 @@ class Wan22TwoStageUnlimitedSampler:
                 force_full_denoise=high_return_with_leftover_noise == "disable",
                 noise_mask=chunk_mask, disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
             )
+            if debug:
+                logging.info(
+                    "Wan chunk %d high output=%s mean=%.5f std=%.5f",
+                    chunk.chunk_index + 1,
+                    tuple(high_output.shape),
+                    high_output.float().mean().item(),
+                    high_output.float().std().item(),
+                )
             low_noise = (comfy.sample.prepare_empty_noise(high_output) if low_add_noise == "disable"
                          else comfy.sample.prepare_noise(high_output, noise_seed, latent_image.get("batch_index")))
+            low_positive = _slice_standard_conditioning(positive, vs, ve, reference_latent)
+            low_negative = _slice_standard_conditioning(negative, vs, ve, reference_latent)
             low_output = comfy.sample.sample(
                 low_model, low_noise, steps, cfg, sampler_name, scheduler,
-                positive_chunk, negative_chunk, high_output,
+                low_positive, low_negative, high_output,
                 disable_noise=low_add_noise == "disable", start_step=low_start_at_step,
                 last_step=low_end_at_step,
                 force_full_denoise=low_return_with_leftover_noise == "disable",
                 noise_mask=chunk_mask, disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=noise_seed,
             )
 
+            if debug:
+                logging.info(
+                    "Wan chunk %d low output=%s mean=%.5f std=%.5f",
+                    chunk.chunk_index + 1,
+                    tuple(low_output.shape),
+                    low_output.float().mean().item(),
+                    low_output.float().std().item(),
+                )
             output_video.append(low_output[:, :, chunk.overlap_steps:].detach().cpu())
             if chunk.chunk_index + 1 < len(chunks) and chunk.overlap_steps:
                 decoded = vae.decode(low_output)
                 context_frames = 1 + 4 * (chunk.overlap_steps - 1)
                 reference_latent = _encode_video_frames(vae, decoded[:, -context_frames:]).detach().cpu()
+                if debug:
+                    logging.info(
+                        "Wan chunk %d continuation pixels=%s latent=%s mean=%.5f std=%.5f",
+                        chunk.chunk_index + 1,
+                        tuple(decoded[:, -context_frames:].shape),
+                        tuple(reference_latent.shape),
+                        reference_latent.float().mean().item(),
+                        reference_latent.float().std().item(),
+                    )
             else:
                 reference_latent = None
             chunk_infos.append(
