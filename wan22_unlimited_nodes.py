@@ -684,11 +684,11 @@ def _slice_standard_conditioning(conditioning, video_start, video_end, reference
         metadata = metadata.copy()
         if "audio_embed" in metadata:
             raise ValueError("Wan22 unlimited sampler does not support audio conditioning")
+        for key in ("concat_latent_image", "concat_mask"):
+            value = metadata.get(key)
+            if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
+                metadata[key] = value[:, :, video_start:video_end].clone()
         if reference_latent is not None:
-            for key in ("concat_latent_image", "concat_mask"):
-                value = metadata.get(key)
-                if torch.is_tensor(value) and value.ndim == 5 and value.shape[2] >= video_end:
-                    metadata[key] = value[:, :, video_start:video_end].clone()
             concat_image = metadata.get("concat_latent_image")
             concat_mask = metadata.get("concat_mask")
             if torch.is_tensor(concat_image) and concat_image.shape[1] == reference_latent.shape[1]:
