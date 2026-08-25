@@ -31,6 +31,7 @@ import comfy.patcher_extension
 import comfy.sampler_helpers
 import comfy.samplers
 import latent_preview
+import nodes
 
 from .preview import begin_preview_execution
 
@@ -873,6 +874,27 @@ class Wan22TwoStageUnlimitedSampler:
             )
 
         chunks = _chunk_plan(samples.shape[2], max(5, align_pixel_frames_to_chunk(chunk_frames)), overlap_frames)
+        if len(chunks) == 1:
+            if debug:
+                logging.info("Wan single chunk: using the native KSamplerAdvanced path without slicing")
+            high_output = nodes.common_ksampler(
+                high_model, noise_seed, steps, cfg, sampler_name, scheduler,
+                positive, negative, latent_image,
+                disable_noise=high_add_noise == "disable",
+                start_step=high_start_at_step,
+                last_step=high_end_at_step,
+                force_full_denoise=high_return_with_leftover_noise == "disable",
+            )[0]
+            low_output = nodes.common_ksampler(
+                low_model, noise_seed, steps, cfg, sampler_name, scheduler,
+                positive, negative, high_output,
+                disable_noise=low_add_noise == "disable",
+                start_step=low_start_at_step,
+                last_step=low_end_at_step,
+                force_full_denoise=low_return_with_leftover_noise == "disable",
+            )[0]
+            return (low_output, f"Single chunk: latent [0, {samples.shape[2]})")
+
         output_video = []
         reference_latent = None
         chunk_infos = []
