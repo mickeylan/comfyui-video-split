@@ -79,6 +79,7 @@
 
 | 节点名称 | 功能 |
 |---------|------|
+| **Wan Image To Video (Low Memory)** | 替代官方WanImageToVideo；在采样前使用CPU条件帧和空间/时间瓦片VAE编码解决1080p OOM。 |
 | **Wan22 Two-Stage Single Chunk Sampler** | 单段 Wan 2.2 High→卸载→Low→卸载基线。 |
 | **Wan22 Two-Stage I2V Sampler Unlimited** | 单节点 Wan I2V 无限分段；上一段最终像素帧用于重建下一段原生 I2V 任务。 |
 | **Bernini Two-Stage Sampler Unlimited** | Bernini R2V/V2V/RV2V/ADS2V 分段采样；逐段重建 Bernini conditioning，支持 High/Low SIGMAS。 |
@@ -91,6 +92,7 @@
 - 帧数遵循 `1 + 4 × N`；常用值为 49、81、113、161。
 - 每段严格执行 `High → 卸载 High → Low → 卸载 Low`。
 - 输出为 CPU `IMAGE`，方便直接连接视频保存节点。
+- 两个Unlimited节点默认使用Wan VAE空间+时间瓦片解码；1080p低显存建议从`256/64/2/1`开始（tile/overlap/temporal/temporal overlap）。
 
 **Bernini 重点**：
 - `BasicScheduler → SplitSigmas.high_sigmas/low_sigmas` 分别连接节点的两个 `SIGMAS` 输入。

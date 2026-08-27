@@ -35,6 +35,7 @@ Place the `comfyui-video-split` folder into the `custom_nodes/` directory and re
 
 | Node | Description |
 |------|-------------|
+| **Wan Image To Video (Low Memory)** | Replaces WanImageToVideo with CPU conditioning frames and spatial/temporal tiled VAE encode before sampling to avoid 1080p OOM. |
 | **Wan22 Two-Stage Single Chunk Sampler** | Baseline Wan 2.2 High→unload→Low→unload sampling for one segment. |
 | **Wan22 Two-Stage I2V Sampler Unlimited** | Internal Wan I2V loop; the final decoded frame starts a fresh native I2V task for the next segment. |
 | **Bernini Two-Stage Sampler Unlimited** | Chunked Bernini R2V/V2V/RV2V/ADS2V with per-segment conditioning rebuild and separate High/Low SIGMAS. |
@@ -47,6 +48,7 @@ The legacy `Wan22UnlimitedSampler`, `Wan22LowNoiseUnlimitedSampler`, and `Wan22H
 - Frame counts follow `1 + 4 × N`; common values are 49, 81, 113, and 161.
 - Every segment executes `High → unload High → Low → unload Low`.
 - The assembled result is returned as CPU `IMAGE` frames.
+- Both unlimited nodes default to spatial and temporal Wan VAE tiled decode. Start 1080p low-memory decoding at `256/64/2/1` (tile/overlap/temporal/temporal overlap).
 
 **Bernini essentials**:
 - Connect `BasicScheduler → SplitSigmas.high_sigmas/low_sigmas` to the two `SIGMAS` inputs.

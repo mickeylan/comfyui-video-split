@@ -25,9 +25,9 @@ High采样 → 卸载High → Low采样 → 卸载Low → VAE解码到CPU
 ```text
 High模型 ───────────────→ high_model
 Low模型 ────────────────→ low_model
-WanImageToVideo positive → positive
-WanImageToVideo negative → negative
-WanImageToVideo latent ─→ latent_image
+Wan Image To Video (Low Memory) positive → positive
+Wan Image To Video (Low Memory) negative → negative
+Wan Image To Video (Low Memory) latent ─→ latent_image
 Wan VAE ────────────────→ vae
 可选CLIP Vision输出 ────→ clip_vision_output
 frames ────────────────→ VHS Video Combine等保存节点
@@ -35,7 +35,9 @@ frames ────────────────→ VHS Video Combine等�
 
 保持原工作流的 `steps`、`cfg`、`sampler_name`、`scheduler`、High/Low step范围、seed和LoRA不变。
 
-节点会完成：首段使用原始I2V任务；解码最后一帧；后续段用该像素帧重建新的原生 `WanImageToVideo` 任务；删除重复边界帧并在CPU拼接。
+1080p时请用`Wan Image To Video (Low Memory)`替换官方`WanImageToVideo`。它在CPU构造条件帧，并在采样前执行空间/时间瓦片VAE编码。建议编码参数：`tile=256`、`overlap=64`、`temporal=5`、`temporal_overlap=1`。
+
+Unlimited节点会完成：首段使用低显存I2V任务；解码最后一帧；后续段也使用同一低显存瓦片编码路径重建I2V任务；删除重复边界帧并在CPU拼接。
 
 ### 建议
 
@@ -98,7 +100,32 @@ reference_video留空
 
 后续段保留所有原始参考图，并在仍有参考槽位时把上一段最后像素帧作为末尾参考流。它是软连续参考，不等同于Wan I2V的首帧硬锚定。
 
-## 4. 参数表
+## 4. VAE低显存瓦片解码
+
+Wan与Bernini两个Unlimited节点默认开启`空间瓦片 + 时间瓦片`解码。它只改变VAE解码，不改变模型、LoRA、seed、采样器、scheduler、SIGMAS或采样latent。
+
+1080p低显存起点：
+
+```text
+tiled_decode = true
+vae_tile_size = 256
+vae_tile_overlap = 64
+vae_temporal_size = 2
+vae_temporal_overlap = 1
+```
+
+显存充足时可将`vae_tile_size`提高到512、`vae_temporal_size`提高到3或4以减少解码时间。必须满足：
+
+```text
+vae_tile_overlap < vae_tile_size
+vae_temporal_overlap < vae_temporal_size
+```
+
+`vae_tile_size`和`vae_tile_overlap`是像素单位；节点按Wan VAE的8×空间压缩换算为latent瓦片。时间参数使用latent时间步。
+
+关闭`tiled_decode`会恢复完整`vae.decode()`，1080p长段可能爆显存。
+
+## 5. 参数表
 
 | 参数 | 建议/说明 |
 |---|---|
@@ -109,8 +136,11 @@ reference_video留空
 | `high_sigmas`, `low_sigmas` | 直接来自同一个`SplitSigmas` |
 | `high_noise_seed`, `low_noise_seed` | 保持官方工作流设置 |
 | `high_cfg`, `low_cfg` | 分别匹配官方High/Low SamplerCustom |
+| `tiled_decode` | 默认开启，1080p建议保持开启 |
+| `vae_tile_size/overlap` | 默认256/64像素 |
+| `vae_temporal_size/overlap` | 默认2/1 latent时间步 |
 
-## 5. 验证顺序
+## 6. 验证顺序
 
 1. 重启ComfyUI并强制刷新浏览器。
 2. 节点schema变化后删除旧节点实例并重新添加，避免widget值错位。
@@ -119,7 +149,7 @@ reference_video留空
 5. 单段正常后测试81帧，再测试113/161帧。
 6. 检查人物、服装、背景、颜色和亮度是否从第二段开始漂移。
 
-## 6. 排错
+## 7. 排错
 
 ### 画面雪花
 
@@ -138,7 +168,7 @@ reference_video留空
 
 这是旧节点schema缓存。重启ComfyUI、强制刷新、删除旧节点并重新添加。
 
-## 7. 已删除节点
+## 8. 已删除节点
 
 以下旧节点不再注册：
 
