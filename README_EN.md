@@ -61,6 +61,9 @@ See the complete wiring, parameter, and troubleshooting guide: [Wan 2.2 / Bernin
 
 | Node | Description |
 |------|-------------|
+| **LTXV Unlimited Sampler** | Overlapping internal chunk sampling for LTX video/AV latents |
+| **LTX Video Segment Info / Get Video Segment** | LTX-grid-aligned outer video segmentation with overlap |
+| **LTX Decode To Video Segment / Final Video Save** | Low-memory disk segment decode and final H.264/audio assembly |
 | **LTX VRAM Manager** | VRAM mode config, auto-detects GPU and recommends settings |
 | **LTX Video Optimized Decode** | bf16 forced VAE decode, significant speedup on Ampere+ GPUs |
 | **LTX Video Optimized Audio Decode** | Audio VAE decode |
@@ -70,17 +73,18 @@ See the complete wiring, parameter, and troubleshooting guide: [Wan 2.2 / Bernin
 - `resolution_hint`: recommended resolution based on VRAM
 - Auto-prints recommended settings
 
-**12GB VRAM Recommended Config**:
-```
-chunk_frames: 33
-resolution: 1280x720
---lowvram
-```
+**LTX frame grid and recommendations**:
+- LTX uses `8 × N + 1`: 9, 17, 25, 33, 41, and so on.
+- `LTXVUnlimitedSampler.chunk_frames` is aligned down to this grid by the backend.
+- Start 720p low-memory redraw at `chunk_frames=17`; 9 saves more VRAM, while 25/33 reduce chunk count at higher memory cost.
+- Internal `chunk_frames` and outer `frames_per_segment/overlap_frames` are separate layers.
 
 **LTX Optimized Decode**:
 - Auto-detects Ampere+ GPUs
 - Handles AV joint latent
 - Does not move diffusion model (avoids --lowvram OOM)
+
+See formulas, tail handling, overlap, and chunk-count examples in the [LTX `chunk_frames` Guide](docs/LTX_CHUNK_FRAMES_GUIDE_EN.md).
 
 ## Node Details
 

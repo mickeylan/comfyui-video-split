@@ -105,6 +105,9 @@
 
 | 节点名称 | 功能 |
 |---------|------|
+| **LTXV Unlimited Sampler** | LTX视频/AV latent内部重叠分块采样。 |
+| **LTX Video Segment Info / Get Video Segment** | 按LTX时间网格执行外层重叠视频分段。 |
+| **LTX Decode To Video Segment / Final Video Save** | 低内存逐段解码到磁盘并最终合并H.264与音频。 |
 | **LTX VRAM Manager** | VRAM 模式配置，自动检测显卡推荐参数。 |
 | **LTX Video Optimized Decode** | bf16 强制 VAE 解码，Ampere+ GPU 显著加速。 |
 | **LTX Video Optimized Audio Decode** | 音频 VAE 解码。 |
@@ -114,17 +117,18 @@
 - `resolution_hint`: 根据显存推荐分辨率
 - 自动打印推荐配置
 
-**12GB VRAM 推荐配置**:
-```
-chunk_frames: 33
-resolution: 1280x720
---lowvram
-```
+**LTX帧网格与推荐值**：
+- LTX使用`8 × N + 1`：9、17、25、33、41……
+- `LTXVUnlimitedSampler.chunk_frames`后端向下对齐到该网格。
+- 720p低显存重绘建议从`chunk_frames=17`开始；9更省显存，25/33减少块数但需要更多显存。
+- 内部`chunk_frames`与外层`frames_per_segment/overlap_frames`是两个独立层级，不应混为一个参数。
 
 **LTX 优化解码**:
 - 自动检测 Ampere+ GPU
 - 处理 AV 联合 latent
 - 不移动 diffusion model（避免 --lowvram OOM）
+
+完整公式、尾段、重叠和块数示例见：[LTX `chunk_frames` 计算手册](docs/LTX_CHUNK_FRAMES_GUIDE.md)。
 
 ### 文字/字幕节点 📝
 

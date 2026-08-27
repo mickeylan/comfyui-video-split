@@ -1364,6 +1364,9 @@ progressive_decode: True
 
 | 节点 | 说明 |
 |------|------|
+| **LTXV Unlimited Sampler** | LTX视频/AV内部重叠分块采样 |
+| **LTX Video Segment Info / Get Video Segment** | LTX网格外层重叠分段 |
+| **LTX Decode To Video Segment / Final Video Save** | 逐段落盘并最终保存H.264与音频 |
 | **LTX VRAM Manager** | VRAM 模式配置，自动检测显卡 |
 | **LTX Video Optimized Decode** | bf16 强制 VAE 解码 |
 | **LTX Video Optimized Audio Decode** | 音频 VAE 解码 |
@@ -1394,13 +1397,23 @@ progressive_decode: True
 - 降低显存占用
 - 不影响采样质量
 
-### 13.4 12GB VRAM 配置
+### 13.4 `chunk_frames`计算
 
+LTX使用`像素帧数 = 8 × N + 1`，合法值为9、17、25、33、41……。内部采样器会把任意输入向下对齐到该网格。
+
+720p低显存重绘建议：
+
+```text
+LTXVUnlimitedSampler chunk_frames: 17
+外层 overlap_frames: 17
+progressive_decode: False（使用独立流式解码保存时）
 ```
-chunk_frames: 33
-resolution: 1280x720
---lowvram
-```
+
+内部chunk固定重叠1个latent时间步。`chunk_frames=17`时，第一块贡献17帧，后续每块贡献16帧；81帧为`17 + 16 × 4`。
+
+外层分段的`frames_per_segment`根据`round(segment_duration × fps)`向下对齐到`8N+1`；外层overlap也对齐为1、9、17、25……，步长为`frames_per_segment - overlap_frames`。
+
+完整公式、尾段补齐与段数计算见：[LTX `chunk_frames`计算手册](LTX_CHUNK_FRAMES_GUIDE.md)（[English](LTX_CHUNK_FRAMES_GUIDE_EN.md)）。
 
 ---
 
