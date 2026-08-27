@@ -75,27 +75,31 @@
 | **VideoSplit LTX Optimized Decode** | bf16 强制 VAE 解码，Ampere+ GPU 显著加速 |
 | **VideoSplit LTX Optimized Audio Decode** | 音频 VAE 解码 |
 
-### Wan 2.2 / Bernini 分块采样
+### Wan 2.2 / Bernini 两阶段无限采样
 
 | 节点名称 | 功能 |
 |---------|------|
-| **Wan22 / Bernini Sampler Unlimited** | 原有 Custom Sampler 高级 `noise`、`guider`、`sampler`、`sigmas` 接口。 |
-| **Wan22 / Bernini Low Noise Sampler Unlimited** | 标准 KSamplerAdvanced 接口的单模型分块采样器。 |
-| **Wan22 / Bernini High Noise Sampler Unlimited** | 标准 KSamplerAdvanced 接口的单模型分块采样器；将低噪节点的 LATENT 输出接到 `latent_image`。 |
-| **Wan22 Unlimited Preview** | 实时预览节点，使用 lighttaew2_2 TAESD 解码。 |
+| **Wan22 Two-Stage Single Chunk Sampler** | 单段 Wan 2.2 High→卸载→Low→卸载基线。 |
+| **Wan22 Two-Stage I2V Sampler Unlimited** | 单节点 Wan I2V 无限分段；上一段最终像素帧用于重建下一段原生 I2V 任务。 |
+| **Bernini Two-Stage Sampler Unlimited** | Bernini R2V/V2V/RV2V/ADS2V 分段采样；逐段重建 Bernini conditioning，支持 High/Low SIGMAS。 |
+| **Wan22 Unlimited Preview** | 使用 lighttaew2_2 TAESD 的实时预览包装节点。 |
 
-**Wan22 帧结构**: 像素帧数 = 1 + 4 × N（1 latent 步 = 4 像素帧）
+已删除旧的 `Wan22UnlimitedSampler`、`Wan22LowNoiseUnlimitedSampler` 和 `Wan22HighNoiseUnlimitedSampler`，因为它们不能可靠保持 Bernini 多流条件语义。
 
-**参数说明**:
-- `chunk_frames`: 每块最大像素帧数（1+4N 格式），默认 128，建议 720p 用 128，540p 用 256
-- `overlap_frames`: 重叠像素帧数（引导前一块的末帧），默认 8 帧 (2 latent 步)
-- `progressive_decode`: 启用 tiled VAE 解码到 CPU，降低峰值显存
+**共同约束**：
+- 当前聚焦 Wan 16 通道视频 latent、8× 空间压缩、batch 1。
+- 帧数遵循 `1 + 4 × N`；常用值为 49、81、113、161。
+- 每段严格执行 `High → 卸载 High → Low → 卸载 Low`。
+- 输出为 CPU `IMAGE`，方便直接连接视频保存节点。
 
-**I2V 连续性**: 后续段落会自动将上一段的尾帧注入到当前段落的 position 0，确保画面连续。
+**Bernini 重点**：
+- `BasicScheduler → SplitSigmas.high_sigmas/low_sigmas` 分别连接节点的两个 `SIGMAS` 输入。
+- R2V 使用 `image0`–`image7`，顺序必须和提示词中的 `image0`、`image1`一致。
+- V2V/RV2V 可连接 `source_video`；ADS2V 可再连接 `reference_video`。
+- `positive/negative` 可来自 Bernini Studio；节点会移除旧的整段 `context_latents`，再按当前分段和节点自身的图像/视频输入重建。
+- 图像、尺寸、`ref_max_size`、模型、LoRA、seed、CFG、sampler 与 SIGMAS 应和已验证的官方单段工作流保持一致。
 
-**VRAM 节省**:
-- 分块采样: ~50% 显存
-- 渐进式解码: ~30% 峰值显存
+完整接线、参数和排错说明见：[Wan 2.2 / Bernini 操作手册](docs/WAN_BERNINI_GUIDE.md)。
 
 ### LTX Video 分块采样
 

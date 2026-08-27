@@ -1,6 +1,8 @@
 # ComfyUI Video Split 使用文档
 
-> 版本：v0.8.0 | 最后更新：2026年8月
+> 版本：v0.9.0 | 最后更新：2026年8月
+>
+> Wan 2.2 / Bernini 两阶段无限采样请参阅：[专项操作手册](WAN_BERNINI_GUIDE.md)（[English](WAN_BERNINI_GUIDE_EN.md)）。
 
 ---
 

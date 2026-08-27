@@ -31,27 +31,31 @@ Place the `comfyui-video-split` folder into the `custom_nodes/` directory and re
 | **Video Scale** | Scale video |
 | **Video Info** | Get video info |
 
-### Wan 2.2 / Bernini Chunk Sampling
+### Wan 2.2 / Bernini Two-Stage Unlimited Sampling
 
 | Node | Description |
 |------|-------------|
-| **Wan22 / Bernini Sampler Unlimited** | CustomAdvanced interface: `noise`, `guider`, `sampler`, `sigmas` |
-| **Wan22 / Bernini Low Noise Sampler Unlimited** | KSamplerAdvanced interface |
-| **Wan22 / Bernini High Noise Sampler Unlimited** | KSamplerAdvanced interface; connect Low Noise LATENT to `latent_image` |
-| **Wan22 Unlimited Preview** | Real-time preview using lighttaew2_2 TAESD |
+| **Wan22 Two-Stage Single Chunk Sampler** | Baseline Wan 2.2 High→unload→Low→unload sampling for one segment. |
+| **Wan22 Two-Stage I2V Sampler Unlimited** | Internal Wan I2V loop; the final decoded frame starts a fresh native I2V task for the next segment. |
+| **Bernini Two-Stage Sampler Unlimited** | Chunked Bernini R2V/V2V/RV2V/ADS2V with per-segment conditioning rebuild and separate High/Low SIGMAS. |
+| **Wan22 Unlimited Preview** | Real-time lighttaew2_2 TAESD preview wrapper. |
 
-**Wan22 Frame Structure**: pixel frames = 1 + 4 × N (1 latent step = 4 pixel frames)
+The legacy `Wan22UnlimitedSampler`, `Wan22LowNoiseUnlimitedSampler`, and `Wan22HighNoiseUnlimitedSampler` nodes were removed because they could not preserve Bernini multi-stream conditioning reliably.
 
-**Parameters**:
-- `chunk_frames`: max pixel frames per chunk (1+4N format), default 128
-- `overlap_frames`: overlap pixel frames (guides from previous chunk), default 8 frames (2 latent steps)
-- `progressive_decode`: enable tiled VAE decode to CPU, reduces peak VRAM
+**Shared constraints**:
+- Currently targets 16-channel Wan video latents, 8× spatial compression, and batch size 1.
+- Frame counts follow `1 + 4 × N`; common values are 49, 81, 113, and 161.
+- Every segment executes `High → unload High → Low → unload Low`.
+- The assembled result is returned as CPU `IMAGE` frames.
 
-**I2V Continuity**: Subsequent chunks automatically inject the previous chunk's last frame into position 0, ensuring visual continuity.
+**Bernini essentials**:
+- Connect `BasicScheduler → SplitSigmas.high_sigmas/low_sigmas` to the two `SIGMAS` inputs.
+- For R2V, connect references to `image0`–`image7` in exactly the order used by the prompt.
+- Connect `source_video` for V2V/RV2V and optionally `reference_video` for ADS2V.
+- `positive/negative` may come from Bernini Studio. Existing full-length `context_latents` are removed and rebuilt from this node's image/video inputs for each segment.
+- Keep references, dimensions, `ref_max_size`, models, LoRAs, seeds, CFG, sampler, and SIGMAS identical to a known-good official single-segment workflow.
 
-**VRAM Savings**:
-- Chunk sampling: ~50% VRAM
-- Progressive decode: ~30% peak VRAM reduction
+See the complete wiring, parameter, and troubleshooting guide: [Wan 2.2 / Bernini User Guide](docs/WAN_BERNINI_GUIDE_EN.md).
 
 ### LTX Video Chunk Sampling
 
