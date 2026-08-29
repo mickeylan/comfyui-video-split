@@ -8,6 +8,8 @@ import torch
 import nodes
 import node_helpers
 import comfy
+import comfy.clip_vision
+import comfy.context_windows
 import comfy.patcher_extension
 import comfy.samplers
 from comfy_extras.nodes_bernini import BerniniConditioning
@@ -217,6 +219,76 @@ class WanImageToVideoLowMemory:
         )
 
 
+class WanThreeFrameToVideoLowMemory:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "positive": ("CONDITIONING",),
+            "negative": ("CONDITIONING",),
+            "vae": ("VAE",),
+            "width": ("INT", {"default": 1920, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 16}),
+            "height": ("INT", {"default": 1088, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 16}),
+            "length": ("INT", {"default": 65, "min": 1, "max": nodes.MAX_RESOLUTION, "step": 4}),
+            "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+            "vae_tile_size": ("INT", {"default": 256, "min": 128, "max": 2048, "step": 64}),
+            "vae_tile_overlap": ("INT", {"default": 64, "min": 8, "max": 1024, "step": 8}),
+            "vae_temporal_size": ("INT", {"default": 5, "min": 2, "max": 64}),
+            "vae_temporal_overlap": ("INT", {"default": 1, "min": 1, "max": 63}),
+        }, "optional": {
+            "start_image": ("IMAGE",),
+            "middle_image": ("IMAGE",),
+            "end_image": ("IMAGE",),
+            "clip_vision_start": ("CLIP_VISION_OUTPUT",),
+            "clip_vision_middle": ("CLIP_VISION_OUTPUT",),
+            "clip_vision_end": ("CLIP_VISION_OUTPUT",),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT")
+    RETURN_NAMES = ("positive", "negative", "latent")
+    FUNCTION = "execute"
+    CATEGORY = "model/conditioning/wan"
+
+    def execute(self, positive, negative, vae, width, height, length, batch_size, vae_tile_size,
+                vae_tile_overlap, vae_temporal_size, vae_temporal_overlap, start_image=None,
+                middle_image=None, end_image=None, clip_vision_start=None, clip_vision_middle=None,
+                clip_vision_end=None):
+        latent_steps = pixel_frames_to_latent_steps(length)
+        latent = torch.zeros(
+            (batch_size, vae.latent_channels, latent_steps, height // vae.spacial_compression_encode(), width // vae.spacial_compression_encode()),
+            device=comfy.model_management.intermediate_device(),
+        )
+        images = [(0, start_image), (((length - 1) // 8) * 4, middle_image), (length - 1, end_image)]
+        connected = [(index, image[:1]) for index, image in images if image is not None]
+        if connected:
+            dtype = connected[0][1].dtype
+            video = torch.full((length, height, width, 3), 0.5, device="cpu", dtype=dtype)
+            pixel_mask = torch.ones((1, 1, latent_steps * 4, height // vae.spacial_compression_encode(), width // vae.spacial_compression_encode()), device="cpu", dtype=dtype)
+            for index, image in connected:
+                resized = comfy.utils.common_upscale(
+                    image.movedim(-1, 1), width, height, "bilinear", "center",
+                ).movedim(1, -1).detach().cpu()
+                video[index] = resized[0, :, :, :3]
+                pixel_mask[:, :, index:index + 1] = 0.0
+            concat_latent_image = _encode_wan_video_tiled(
+                vae, video, vae_tile_size, vae_tile_overlap, vae_temporal_size, vae_temporal_overlap,
+            )
+            concat_mask = pixel_mask.view(1, latent_steps, 4, pixel_mask.shape[-2], pixel_mask.shape[-1]).transpose(1, 2)
+            values = {"concat_latent_image": concat_latent_image, "concat_mask": concat_mask}
+            positive = node_helpers.conditioning_set_values(positive, values)
+            negative = node_helpers.conditioning_set_values(negative, values)
+
+        clip_outputs = [x for x in (clip_vision_start, clip_vision_middle, clip_vision_end) if x is not None]
+        if clip_outputs:
+            clip_vision_output = comfy.clip_vision.Output()
+            clip_vision_output.penultimate_hidden_states = torch.cat(
+                [output.penultimate_hidden_states for output in clip_outputs], dim=-2,
+            )
+            values = {"clip_vision_output": clip_vision_output}
+            positive = node_helpers.conditioning_set_values(positive, values)
+            negative = node_helpers.conditioning_set_values(negative, values)
+        return (positive, negative, {"samples": latent})
+
+
 class Wan22TwoStageSingleChunkSampler:
     @classmethod
     def INPUT_TYPES(cls):
@@ -298,6 +370,9 @@ class Wan22TwoStageUnlimitedSampler:
             "vae_temporal_size": ("INT", {"default": 2, "min": 2, "max": 64}),
             "vae_temporal_overlap": ("INT", {"default": 1, "min": 1, "max": 63}),
             "vae_encode_temporal_size": ("INT", {"default": 5, "min": 2, "max": 64}),
+            "chain_latent": (["disable", "enable"], {"default": "disable", "advanced": True}),
+            "chain_denoise_strength": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05, "advanced": True}),
+            "overlap_frames": ("INT", {"default": 0, "min": 0, "max": 32, "step": 4, "advanced": True}),
             "debug": ("BOOLEAN", {"default": False}),
         }
         return inputs
@@ -312,10 +387,12 @@ class Wan22TwoStageUnlimitedSampler:
                 high_return_with_leftover_noise, low_add_noise, low_start_at_step, low_end_at_step,
                 low_return_with_leftover_noise, chunk_frames, clip_vision_output=None, tiled_decode=True,
                 vae_tile_size=256, vae_tile_overlap=64, vae_temporal_size=2, vae_temporal_overlap=1,
-                vae_encode_temporal_size=5, debug=False, overlap_frames=0, clip=None, positive_prompt="",
-                negative_prompt="", fps=16.0):
-        if clip is not None or positive_prompt or negative_prompt or fps != 16.0 or overlap_frames:
-            logging.warning("Wan22 legacy unlimited sampler inputs are no longer used; reload the node to remove them")
+                vae_encode_temporal_size=5, chain_latent="disable", chain_denoise_strength=0.3,
+                overlap_frames=0, debug=False, clip=None, positive_prompt="", negative_prompt="", fps=16.0):
+        if chain_latent != "disable":
+            logging.warning("Wan22 chain latent is disabled; using frame overlap continuation")
+        if clip is not None or positive_prompt or negative_prompt or fps != 16.0:
+            logging.warning("Wan22 legacy prompt inputs are ignored")
         if not 0 <= high_start_at_step <= high_end_at_step:
             raise ValueError("High-noise steps must satisfy 0 <= start_at_step <= end_at_step")
         if not 0 <= low_start_at_step <= low_end_at_step:
@@ -336,16 +413,24 @@ class Wan22TwoStageUnlimitedSampler:
         max_steps = pixel_frames_to_latent_steps(max(5, align_pixel_frames_to_chunk(chunk_frames)))
         max_steps = max(2, max_steps)
         remaining_intervals = total_steps - 1
+        overlap_intervals = min(overlap_frames // 4, max_steps - 2)
         frame_chunks = []
         chunk_infos = []
-        previous_frame = None
+        previous_frames = None
         chunk_index = 0
         video_width = samples.shape[4] * vae.spacial_compression_encode()
         video_height = samples.shape[3] * vae.spacial_compression_encode()
 
         while chunk_index == 0 or remaining_intervals > 0:
-            new_intervals = min(max_steps - 1, remaining_intervals)
-            chunk_steps = new_intervals + 1
+            if chunk_index == 0:
+                new_intervals = min(max_steps - 1, remaining_intervals)
+                sampled_intervals = new_intervals
+                context_frames = 0
+            else:
+                new_intervals = min(max_steps - 1 - overlap_intervals, remaining_intervals)
+                sampled_intervals = overlap_intervals + new_intervals
+                context_frames = latent_steps_to_pixel_frames(overlap_intervals + 1)
+            chunk_steps = sampled_intervals + 1
             chunk_length = latent_steps_to_pixel_frames(chunk_steps)
 
             if chunk_index == 0:
@@ -356,9 +441,10 @@ class Wan22TwoStageUnlimitedSampler:
                 positive_chunk = _slice_standard_conditioning(positive, 0, chunk_steps, clip_vision_output=clip_vision_output)
                 negative_chunk = _slice_standard_conditioning(negative, 0, chunk_steps, clip_vision_output=clip_vision_output)
             else:
+                context = previous_frames[-context_frames:]
                 positive_chunk, negative_chunk, chunk_latent = _wan_image_to_video_low_memory(
                     positive, negative, vae, video_width, video_height, chunk_length, 1,
-                    previous_frame, clip_vision_output, vae_tile_size, vae_tile_overlap,
+                    context, clip_vision_output, vae_tile_size, vae_tile_overlap,
                     vae_encode_temporal_size, vae_temporal_overlap,
                 )
 
@@ -373,24 +459,24 @@ class Wan22TwoStageUnlimitedSampler:
                 vae_temporal_size, vae_temporal_overlap,
             )
             if chunk_index:
-                frame_chunks.append(decoded[1:])
+                frame_chunks.append(decoded[context_frames:])
             else:
                 frame_chunks.append(decoded)
-            previous_frame = decoded[-1:]
+            previous_frames = decoded
             remaining_intervals -= new_intervals
+            output_frames = chunk_length if chunk_index == 0 else chunk_length - context_frames
             chunk_infos.append(
-                f"Chunk {chunk_index + 1}: {chunk_length} sampled frames, "
-                f"{chunk_length if chunk_index == 0 else chunk_length - 1} output frames"
+                f"Chunk {chunk_index + 1}: {chunk_length} sampled frames, {output_frames} output frames"
             )
             if debug:
                 logging.info(
                     "Wan two-stage I2V loop chunk %d sampled=%d output=%d identity_reference=%s last_frame_mean=%.5f last_frame_std=%.5f",
                     chunk_index + 1,
                     chunk_length,
-                    chunk_length if chunk_index == 0 else chunk_length - 1,
+                    output_frames,
                     clip_vision_output is not None,
-                    previous_frame.float().mean().item(),
-                    previous_frame.float().std().item(),
+                    decoded[-1:].float().mean().item(),
+                    decoded[-1:].float().std().item(),
                 )
             chunk_index += 1
 
@@ -464,6 +550,9 @@ class BerniniTwoStageUnlimitedSampler:
             "vae_tile_overlap": ("INT", {"default": 64, "min": 8, "max": 1024, "step": 8}),
             "vae_temporal_size": ("INT", {"default": 2, "min": 2, "max": 64}),
             "vae_temporal_overlap": ("INT", {"default": 1, "min": 1, "max": 63}),
+            "chain_latent": (["disable", "enable"], {"default": "disable", "advanced": True}),
+            "chain_denoise_strength": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05, "advanced": True}),
+            "overlap_frames": ("INT", {"default": 0, "min": 0, "max": 32, "step": 4, "advanced": True}),
             "debug": ("BOOLEAN", {"default": False}),
         }}
 
@@ -477,7 +566,10 @@ class BerniniTwoStageUnlimitedSampler:
                 chunk_frames, ref_max_size, image0=None, image1=None, image2=None, image3=None, image4=None,
                 image5=None, image6=None, image7=None, source_video=None, reference_video=None, reference_images=None,
                 tiled_decode=True, vae_tile_size=256, vae_tile_overlap=64, vae_temporal_size=2,
-                vae_temporal_overlap=1, debug=False):
+                vae_temporal_overlap=1, chain_latent="disable", chain_denoise_strength=0.3,
+                overlap_frames=0, debug=False):
+        if chain_latent != "disable" or overlap_frames:
+            logging.warning("Bernini chain latent and overlap are disabled; using the stable continuation path")
         if vae.latent_dim != 3 or vae.latent_channels != 16 or vae.spacial_compression_encode() != 8:
             raise ValueError("Bernini two-stage unlimited sampler requires a 16-channel, 8x spatial Wan video VAE")
         if (total_frames - 1) % 4:
@@ -619,21 +711,118 @@ if HAS_IO_LATEST:
             return io.NodeOutput(patched)
 
 
+class WanVAEDecodeSpatialTiled:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "samples": ("LATENT",),
+            "vae": ("VAE",),
+            "tile_size": ("INT", {"default": 256, "min": 128, "max": 2048, "step": 64}),
+            "tile_overlap": ("INT", {"default": 64, "min": 8, "max": 1024, "step": 8}),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "decode"
+    CATEGORY = "model/latent"
+
+    def decode(self, samples, vae, tile_size, tile_overlap):
+        if tile_overlap >= tile_size:
+            raise ValueError("Wan VAE tile_overlap must be smaller than tile_size")
+        latent = samples["samples"]
+        if latent.is_nested:
+            latent = latent.unbind()[0]
+        if latent.ndim != 5:
+            raise ValueError("Wan spatial tiled decode requires a video latent")
+
+        compression = vae.spacial_compression_decode()
+        tile = max(1, tile_size // compression)
+        overlap = min(tile - 1, max(1, tile_overlap // compression))
+        original_output_device = vae.output_device
+        try:
+            vae.output_device = torch.device("cpu")
+            images = vae.decode_tiled(
+                latent,
+                tile_x=tile,
+                tile_y=tile,
+                overlap=overlap,
+                tile_t=latent.shape[2],
+                overlap_t=max(1, latent.shape[2] - 1),
+            )
+        finally:
+            vae.output_device = original_output_device
+        if images.ndim == 5:
+            images = images.flatten(0, 1)
+        return (images.detach().cpu(),)
+
+
+class Wan22SlidingContextWindows:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "window_frames": ("INT", {"default": 29, "min": 5, "max": 1024, "step": 4}),
+            "overlap_frames": ("INT", {"default": 9, "min": 1, "max": 1024, "step": 4}),
+            "retain_first_frame": ("BOOLEAN", {"default": False}),
+            "fuse_method": (["overlap-linear", "pyramid", "flat"], {"default": "overlap-linear"}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "execute"
+    CATEGORY = "model/patch/wan"
+    EXPERIMENTAL = True
+
+    def execute(self, model, window_frames, overlap_frames, retain_first_frame, fuse_method):
+        context_length = pixel_frames_to_latent_steps(align_pixel_frames_to_chunk(window_frames))
+        context_overlap = max(overlap_frames // 4, 0)
+        if context_overlap >= context_length:
+            raise ValueError("Wan22 sliding context overlap must be smaller than the window")
+
+        patched = model.clone()
+        patched.model_options["context_handler"] = comfy.context_windows.IndexListContextHandler(
+            context_schedule=comfy.context_windows.get_matching_context_schedule(
+                comfy.context_windows.ContextSchedules.UNIFORM_STANDARD,
+            ),
+            fuse_method=comfy.context_windows.get_matching_fuse_method(fuse_method),
+            context_length=context_length,
+            context_overlap=context_overlap,
+            context_stride=1,
+            closed_loop=False,
+            dim=2,
+            freenoise=False,
+            cond_retain_index_list="0" if retain_first_frame else "",
+            split_conds_to_windows=False,
+            latent_retain_index_list="",
+            causal_window_fix=True,
+        )
+        patched.remove_wrappers_with_key(
+            comfy.patcher_extension.WrappersMP.PREPARE_SAMPLING,
+            "ContextWindows_prepare_sampling",
+        )
+        comfy.context_windows.create_prepare_sampling_wrapper(patched)
+        return (patched,)
+
+
 # ============================================================================
 # 节点映射
 # ============================================================================
 
 WAN22_NODE_CLASS_MAPPINGS = {
     "WanImageToVideoLowMemory": WanImageToVideoLowMemory,
+    "WanThreeFrameToVideoLowMemory": WanThreeFrameToVideoLowMemory,
     "Wan22TwoStageSingleChunkSampler": Wan22TwoStageSingleChunkSampler,
     "Wan22TwoStageUnlimitedSampler": Wan22TwoStageUnlimitedSampler,
     "BerniniTwoStageUnlimitedSampler": BerniniTwoStageUnlimitedSampler,
+    "Wan22SlidingContextWindows": Wan22SlidingContextWindows,
+    "WanVAEDecodeSpatialTiled": WanVAEDecodeSpatialTiled,
 }
 WAN22_NODE_DISPLAY_NAME_MAPPINGS = {
     "WanImageToVideoLowMemory": "Wan Image To Video (Low Memory)",
+    "WanThreeFrameToVideoLowMemory": "Wan Three Frames To Video (Low Memory)",
     "Wan22TwoStageSingleChunkSampler": "Wan22 Two-Stage Single Chunk Sampler",
     "Wan22TwoStageUnlimitedSampler": "Wan22 Two-Stage I2V Sampler Unlimited",
     "BerniniTwoStageUnlimitedSampler": "Bernini Two-Stage Sampler Unlimited",
+    "Wan22SlidingContextWindows": "Wan22 Sliding Context Windows",
+    "WanVAEDecodeSpatialTiled": "Wan VAE Decode (Spatial Tiled)",
 }
 
 if HAS_IO_LATEST:
