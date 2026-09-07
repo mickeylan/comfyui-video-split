@@ -1,8 +1,6 @@
 # ComfyUI Video Split 使用文档
 
-> 版本：v0.9.0 | 最后更新：2026年8月
->
-> Wan 2.2 / Bernini 两阶段无限采样请参阅：[专项操作手册](WAN_BERNINI_GUIDE.md)（[English](WAN_BERNINI_GUIDE_EN.md)）。
+> 版本：v0.10.01 | 最后更新：2026年9月
 
 ---
 
@@ -13,13 +11,14 @@
 3. [核心分段节点](#3-核心分段节点)
 4. [基础编辑节点](#4-基础编辑节点)
 5. [剪映功能节点](#5-剪映功能节点)
-6. [音频处理节点](#6-音频处理节点)
-7. [文字/字幕节点](#7-文字字幕节点)
-8. [滤镜/调色节点](#8-滤镜调色节点)
-9. [转场效果节点](#9-转场效果节点)
-10. [特效节点](#10-特效节点)
-11. [工作流示例](#11-工作流示例)
-12. [常见问题](#12-常见问题)
+6. [配音导演台节点](#6-配音导演台节点)
+7. [音频处理节点](#7-音频处理节点)
+8. [文字/字幕节点](#8-文字字幕节点)
+9. [滤镜/调色节点](#9-滤镜调色节点)
+10. [转场效果节点](#10-转场效果节点)
+11. [特效节点](#11-特效节点)
+12. [工作流示例](#12-工作流示例)
+13. [常见问题](#13-常见问题)
 
 ---
 
@@ -474,9 +473,137 @@ pip install Pillow      # 文字渲染
 
 ---
 
-## 6. 音频处理节点
+## 6. 配音导演台节点
 
-### 6.1 Audio Extract
+> 本节点**不加载 TTS 模型、不发起网络请求**。TTS 由外部本地 TTS 节点（如 IndexTTS2）完成，本节点只负责时间线编排和音频合成。
+
+### 6.1 Narration Cue
+
+将 TTS 输出的标准 AUDIO 与时间线元数据绑定。
+
+**输入：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| audio | AUDIO | 必需 | IndexTTS2 输出的标准 AUDIO |
+| text | STRING | "" | 解说词标签（不参与合成） |
+| start_time | FLOAT | 0.0 | 起始时间（秒） |
+| end_time | FLOAT | 5.0 | 结束时间（秒） |
+| volume | FLOAT | 1.0 | 片段音量（0-5） |
+| cue_id | STRING | "" | 稳定 ID，用于导演台覆盖 |
+
+**输出：** NARRATION_CUE（带时间线元数据的音频）
+
+**使用示例：**
+
+```
+# 连接 IndexTTS2 的 AUDIO 输出
+IndexTTS2.audio → NarrationCue.audio
+# 设置时间范围
+NarrationCue.start_time = 0.0
+NarrationCue.end_time = 3.5
+# 设置稳定 ID
+NarrationCue.cue_id = "intro"
+```
+
+### 6.2 Narration Director
+
+接收任意数量 Narration Cue，在可视化时间轴上合成完整配音轨。
+
+**输入：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| total_frames | INT | 1440 | 视频总帧数 |
+| fps | FLOAT | 24.0 | 帧率 |
+| sample_rate | INT | 44100 | 输出采样率 |
+| match_mode | COMBO | natural | natural（保持原长）/ trim（截断）/ fit（重采样填充） |
+| cues | AUTOGROW | - | 动态 Narration Cue 输入 |
+| background_audio | AUDIO | 可选 | 背景音乐 |
+| background_volume | FLOAT | 0.3 | BGM 音量（0-2） |
+| timeline_data | STRING | "" | 导演台前端状态 |
+
+**match_mode 详解：**
+
+| 模式 | 行为 |
+|------|------|
+| natural | 保持 TTS 生成的原始语音长度，可能早于 end_time 结束 |
+| trim | 超出 end_time 时裁剪，语音不会超出预定时间 |
+| fit | 将语音重采样拉伸/压缩到 start_time~end_time 区间 |
+
+**输出：**
+
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| audio | AUDIO | 合成后的配音音频 |
+| duration | FLOAT | 视频时长（秒） |
+| timeline_json | STRING | 本次执行使用的时间线 |
+
+**完整工作流示例：**
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                       工作流                                 │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  解说词 ────────────────────────────┐                       │
+│       │                             │                       │
+│       ▼                             ▼                       │
+│  IndexTTS2 ── AUDIO ──▶ NarrationCue (cue_id="intro")     │
+│       │                             │                       │
+│       ▼                             ▼                       │
+│  IndexTTS2 ── AUDIO ──▶ NarrationCue (cue_id="main")      │
+│       │                             │                       │
+│       ▼                             ▼                       │
+│  IndexTTS2 ── AUDIO ──▶ NarrationCue (cue_id=" outro")    │
+│                                    │                       │
+│                                    ▼                       │
+│                           NarrationDirector                 │
+│                                    │                       │
+│                                    ▼                       │
+│                              AUDIO + duration              │
+│                                    │                       │
+│                          ┌─────────┴─────────┐             │
+│                          ▼                   ▼             │
+│                    AudioMerge          BackgroundMusic       │
+│                          │                   │             │
+│                          └─────────┬─────────┘             │
+│                                    ▼                       │
+│                              SaveVideo                      │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 6.3 前端导演台
+
+添加 Narration Director 节点后，会显示可视化导演台界面：
+
+**功能：**
+
+- 时间轴显示每个 Cue 的位置和波形
+- 拖拽片段调整位置
+- 编辑起止时间、音量和文本标签
+- 添加/删除 Cue 覆盖行
+
+**Cue 覆盖：**
+
+- 在导演台编辑的只是"覆盖值"（override）
+- 原始值由 Narration Cue 节点输入决定
+- 通过 `cue_id` 匹配覆盖目标
+- 工作流只保存 JSON 元数据，不保存音频
+
+### 6.4 最佳实践
+
+1. **保持 natural 模式**：除非有精确时间要求，否则使用 natural 模式获得最佳语音自然度
+2. **使用稳定 cue_id**：在复杂工作流中使用有意义的 ID（如 `intro`、`chapter1`）便于管理
+3. **预览确认**：在 IndexTTS2 阶段先试听每段语音，确认内容正确后再接入导演台
+4. **分段不宜过长**：每段解说词建议 30 秒以内，便于调整和预览
+
+---
+
+## 7. 音频处理节点
+
+### 7.1 Audio Extract
 
 **功能：** 从视频文件提取音频。
 
@@ -494,7 +621,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.2 Audio From Video
+### 7.2 Audio From Video
 
 **功能：** 从视频张量提取音频。
 
@@ -510,7 +637,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.3 Audio Merge
+### 7.3 Audio Merge
 
 **功能：** 音频合并到视频。
 
@@ -529,7 +656,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.4 Audio Volume
+### 7.4 Audio Volume
 
 **功能：** 音量调节。
 
@@ -546,7 +673,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.5 Audio Fade
+### 7.5 Audio Fade
 
 **功能：** 音频淡入淡出。
 
@@ -565,7 +692,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.6 Audio Info
+### 7.6 Audio Info
 
 **功能：** 获取音频信息。
 
@@ -583,7 +710,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.7 Audio Mix
+### 7.7 Audio Mix
 
 **功能：** 多音轨混合（BGM + 配音 + 音效）。
 
@@ -606,7 +733,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.8 Audio Fit To Video
+### 7.8 Audio Fit To Video
 
 **功能：** 音频时长匹配视频。
 
@@ -627,7 +754,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.9 Audio Loop
+### 7.9 Audio Loop
 
 **功能：** 音频循环到指定时长。
 
@@ -646,7 +773,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.10 Audio Cut
+### 7.10 Audio Cut
 
 **功能：** 音频切割。
 
@@ -665,7 +792,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.11 Audio Compose（帧级对齐）
+### 7.11 Audio Compose（帧级对齐）
 
 **功能：** 将多段音频分别放置在视频的指定位置，实现精确的时间轴对齐。
 
@@ -710,7 +837,7 @@ pip install Pillow      # 文字渲染
 
 ---
 
-### 6.12 Audio Compose (Advanced)
+### 7.12 Audio Compose (Advanced)
 
 **功能：** 高级音频合成，支持更多音频段和音量控制。
 
@@ -736,7 +863,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 6.13 Audio Timeline Editor 🎬
+### 7.13 Audio Timeline Editor 🎬
 
 **功能：** 可视化时间轴编辑器，通过拖拽操作校准音频位置。
 
@@ -836,7 +963,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 6.14 Audio Timeline Composer
+### 7.14 Audio Timeline Composer
 
 **功能：** 根据时间轴配置，将多段音频合成到指定位置。
 
@@ -856,9 +983,9 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-## 7. 文字/字幕节点
+## 8. 文字/字幕节点
 
-### 7.1 Text Overlay
+### 8.1 Text Overlay
 
 **功能：** 文字叠加到视频帧。
 
@@ -884,7 +1011,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 7.2 Text Animation
+### 8.2 Text Animation
 
 **功能：** 文字动画（打字机效果等）。
 
@@ -908,7 +1035,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 7.3 Subtitle Import
+### 8.3 Subtitle Import
 
 **功能：** 导入 SRT 字幕。
 
@@ -929,7 +1056,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 7.4 Text Position Preset
+### 8.4 Text Position Preset
 
 **功能：** 文字位置预设。
 
@@ -950,9 +1077,9 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-## 8. 滤镜/调色节点
+## 9. 滤镜/调色节点
 
-### 8.1 Color Adjust
+### 9.1 Color Adjust
 
 **功能：** 亮度/对比度/饱和度调节。
 
@@ -972,7 +1099,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 8.2 Color Temperature
+### 9.2 Color Temperature
 
 **功能：** 色温调节。
 
@@ -989,7 +1116,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 8.3 Color Grade Preset
+### 9.3 Color Grade Preset
 
 **功能：** 预设滤镜效果。
 
@@ -1007,7 +1134,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 8.4 Vignette
+### 9.4 Vignette
 
 **功能：** 暗角效果。
 
@@ -1025,9 +1152,9 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-## 9. 转场效果节点
+## 10. 转场效果节点
 
-### 9.1 Transition Slide
+### 10.1 Transition Slide
 
 **功能：** 滑动转场。
 
@@ -1046,7 +1173,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 9.2 Transition Zoom
+### 10.2 Transition Zoom
 
 **功能：** 缩放转场。
 
@@ -1065,7 +1192,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 9.3 Transition Wipe
+### 10.3 Transition Wipe
 
 **功能：** 擦除转场。
 
@@ -1085,7 +1212,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 9.4 Transition Dissolve
+### 10.4 Transition Dissolve
 
 **功能：** 溶解转场（淡入淡出混合）。
 
@@ -1103,9 +1230,9 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-## 10. 特效节点
+## 11. 特效节点
 
-### 10.1 Background Remove
+### 11.1 Background Remove
 
 **功能：** 角色抠像。
 
@@ -1128,7 +1255,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 10.2 Background Replace
+### 11.2 Background Replace
 
 **功能：** 背景替换。
 
@@ -1148,7 +1275,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 10.3 Color Key
+### 11.3 Color Key
 
 **功能：** 色键抠像（绿幕/蓝幕）。
 
@@ -1168,7 +1295,7 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-### 10.4 Simple Background Remove
+### 11.4 Simple Background Remove
 
 **功能：** 简单背景移除。
 
@@ -1189,9 +1316,9 @@ volumes: "1.0,0.8,1.0,0.6"   # 对应的音量
 
 ---
 
-## 11. 工作流示例
+## 12. 工作流示例
 
-### 11.1 长视频分段放大
+### 12.1 长视频分段放大
 
 ```
 VHS Load Video
@@ -1211,7 +1338,7 @@ forLoopEnd
 VHS Video Combine
 ```
 
-### 11.2 漫剧制作流程
+### 12.2 漫剧制作流程
 
 ```
 1. 素材准备
@@ -1233,7 +1360,7 @@ VHS Video Combine
    Audio Merge → VHS Video Combine
 ```
 
-### 11.3 音频时间轴校准（可视化）
+### 12.3 音频时间轴校准（可视化）
 
 使用可视化编辑器拖拽校准多段音频的位置：
 
@@ -1272,9 +1399,9 @@ VHS Video Combine
 
 ---
 
-## 12. Wan22 / Bernini 分块采样器
+## 13. Wan22 / Bernini 分块采样器
 
-### 12.1 节点列表
+### 13.1 节点列表
 
 | 节点 | 接口 | 说明 |
 |------|------|------|
@@ -1283,7 +1410,7 @@ VHS Video Combine
 | **Wan22 High Noise Sampler Unlimited** | KSamplerAdvanced | 标准接口，输出接高噪节点 |
 | **Wan22 Unlimited Preview** | 预览 | 实时预览，使用 TAESD 解码 |
 
-### 12.2 分块原理
+### 13.2 分块原理
 
 Wan22 的帧结构：**像素帧数 = 1 + 4 × N**（1 latent 步 = 4 像素帧）
 
@@ -1296,7 +1423,7 @@ chunk_frames = 129 → 129 像素帧 / 4 = 32 latent 步 + 1 起始帧
 - 后续段落 position 0 注入上一段的尾帧
 - 连续引导确保画面平滑过渡
 
-### 12.3 典型工作流
+### 13.3 典型工作流
 
 **基础配置**：
 ```
@@ -1324,7 +1451,7 @@ Load Checkpoint             Save Image / Preview
 | overlap_frames | 8 | 8 | 重叠像素帧数 |
 | progressive_decode | False | True | 启用 tiled 解码 |
 
-### 12.4 I2V 连续性
+### 13.4 I2V 连续性
 
 **问题**：分段生成时，后续段落会完全乱生成。
 
@@ -1340,7 +1467,7 @@ Chunk 2: [Chunk1尾帧] + [新生成] → 输出  ← 自动接续
 Chunk 3: [Chunk2尾帧] + [新生成] → 输出  ← 自动接续
 ```
 
-### 12.5 VRAM 优化
+### 13.5 VRAM 优化
 
 | 优化方式 | VRAM 节省 | 说明 |
 |---------|-----------|------|
@@ -1358,20 +1485,17 @@ progressive_decode: True
 
 ---
 
-## 13. LTX Video 分块采样器
+## 14. LTX Video 分块采样器
 
-### 13.1 节点列表
+### 14.1 节点列表
 
 | 节点 | 说明 |
 |------|------|
-| **LTXV Unlimited Sampler** | LTX视频/AV内部重叠分块采样 |
-| **LTX Video Segment Info / Get Video Segment** | LTX网格外层重叠分段 |
-| **LTX Decode To Video Segment / Final Video Save** | 逐段落盘并最终保存H.264与音频 |
 | **LTX VRAM Manager** | VRAM 模式配置，自动检测显卡 |
 | **LTX Video Optimized Decode** | bf16 强制 VAE 解码 |
 | **LTX Video Optimized Audio Decode** | 音频 VAE 解码 |
 
-### 13.2 VRAM 管理器
+### 14.2 VRAM 管理器
 
 **功能**：
 - 自动检测显卡型号和显存
@@ -1385,7 +1509,7 @@ progressive_decode: True
 | 24GB-fast | ≥22GB | 全部驻留 GPU |
 | balanced | <14GB | 平衡 offloading |
 
-### 13.3 bf16 优化解码
+### 14.3 bf16 优化解码
 
 **支持显卡**：
 - RTX 30/40 系列 (Ampere+) ✅
@@ -1397,27 +1521,17 @@ progressive_decode: True
 - 降低显存占用
 - 不影响采样质量
 
-### 13.4 `chunk_frames`计算
+### 14.4 12GB VRAM 配置
 
-LTX使用`像素帧数 = 8 × N + 1`，合法值为9、17、25、33、41……。内部采样器会把任意输入向下对齐到该网格。
-
-720p低显存重绘建议：
-
-```text
-LTXVUnlimitedSampler chunk_frames: 17
-外层 overlap_frames: 17
-progressive_decode: False（使用独立流式解码保存时）
 ```
-
-内部chunk固定重叠1个latent时间步。`chunk_frames=17`时，第一块贡献17帧，后续每块贡献16帧；81帧为`17 + 16 × 4`。
-
-外层分段的`frames_per_segment`根据`round(segment_duration × fps)`向下对齐到`8N+1`；外层overlap也对齐为1、9、17、25……，步长为`frames_per_segment - overlap_frames`。
-
-完整公式、尾段补齐与段数计算见：[LTX `chunk_frames`计算手册](LTX_CHUNK_FRAMES_GUIDE.md)（[English](LTX_CHUNK_FRAMES_GUIDE_EN.md)）。
+chunk_frames: 33
+resolution: 1280x720
+--lowvram
+```
 
 ---
 
-## 14. 常见问题
+## 15. 常见问题
 
 ### Q1: 中文文字显示乱码？
 
@@ -1483,6 +1597,6 @@ start_frame = round(target_time_seconds * fps)
 
 ---
 
-**文档版本：** v2.0  
-**最后更新：** 2026年8月  
+**文档版本：** v2.01  
+**最后更新：** 2026年9月  
 **仓库地址：** https://github.com/mickeylan/comfyui-video-split

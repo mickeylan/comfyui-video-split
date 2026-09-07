@@ -170,6 +170,57 @@
 
 ## 节点详情
 
+### 配音导演台节点 🎤
+
+将外部本地 TTS 节点（如 IndexTTS2）输出的 AUDIO 与时间线元数据绑定，并在可视化时间轴上编排合成完整配音。本节点不加载 TTS 模型、不发起网络请求。
+
+**工作流示例：**
+```
+IndexTTS2 → AUDIO → Narration Cue ─┐
+IndexTTS2 → AUDIO → Narration Cue ─┼─ Narration Director → AUDIO → AudioMerge → SaveVideo
+IndexTTS2 → AUDIO → Narration Cue ─┘
+```
+
+#### Narration Cue
+
+将 TTS AUDIO 与时间线元数据绑定。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| audio | AUDIO | IndexTTS2 输出的标准 AUDIO |
+| text | STRING | 解说词标签（不影响合成） |
+| start_time | FLOAT | 起始时间（秒） |
+| end_time | FLOAT | 结束时间（秒） |
+| volume | FLOAT | 片段音量（0-5） |
+| cue_id | STRING | 稳定 ID，用于导演台覆盖 |
+
+**输出：** NARRATION_CUE（带时间线元数据的音频）
+
+#### Narration Director
+
+接收任意数量 Narration Cue，合成完整配音轨。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| total_frames | INT | 视频总帧数 |
+| fps | FLOAT | 帧率 |
+| sample_rate | INT | 输出采样率（默认 44100） |
+| match_mode | COMBO | natural（保持原长）/ trim（截断）/ fit（重采样填充） |
+| cues | AUTOGROW | 动态 Narration Cue 输入 |
+| background_audio | AUDIO | 可选背景音乐 |
+| background_volume | FLOAT | BGM 音量（0-2） |
+| timeline_data | STRING | 导演台前端状态（不保存音频数据） |
+
+**输出：** AUDIO（合成配音）、duration、timeline_json
+
+**前端导演台功能：**
+- 时间轴可视化，显示每个 Cue 的位置
+- 拖拽调整片段位置
+- 编辑起止时间、音量和文本标签
+- 工作流只保存 JSON 元数据
+
+---
+
 ### Video Segment Info
 
 计算视频的分段信息，供循环节点使用。
@@ -514,6 +565,7 @@ VHS Load Video ─────┤
 
 ## 版本
 
+- v0.10.01 - 新增 NarrationCue + NarrationDirector 配音导演台，完全复用外部本地 TTS（IndexTTS2），支持 natural/trim/fit 三种时间匹配模式，前端可视化时间轴，无网络请求
 - v0.10.0 - 新增 LTX 分块采样器（VideoSplit SamplerCustomAdvanced），支持长视频高分辨率放大；新增连续引导机制，解决分块接缝问题
 - v0.9.0 - 新增视频翻译流水线节点（VoiceSeparator/ENSpeechRecognizer/Translator/ZHTTS）
 - v0.8.0 - 新增可视化时间轴编辑器（Audio Timeline Editor），支持拖拽校准音频位置；新增帧级对齐的 AudioCompose 节点

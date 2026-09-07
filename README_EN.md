@@ -90,6 +90,57 @@ See formulas, tail handling, overlap, and chunk-count examples in the [LTX `chun
 
 ## Node Details
 
+### Narration Director Nodes 🎤
+
+Attach timeline metadata to AUDIO from external local TTS nodes (e.g., IndexTTS2) and compose them into a complete narration track on a visual timeline. This node does NOT load TTS models or make network requests.
+
+**Workflow example:**
+```
+IndexTTS2 → AUDIO → Narration Cue ─┐
+IndexTTS2 → AUDIO → Narration Cue ─┼─ Narration Director → AUDIO → AudioMerge → SaveVideo
+IndexTTS2 → AUDIO → Narration Cue ─┘
+```
+
+#### Narration Cue
+
+Attach timeline metadata to TTS AUDIO.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| audio | AUDIO | Standard AUDIO from IndexTTS2 |
+| text | STRING | Script label (does not affect synthesis) |
+| start_time | FLOAT | Start time in seconds |
+| end_time | FLOAT | End time in seconds |
+| volume | FLOAT | Clip volume (0–5) |
+| cue_id | STRING | Stable ID for Director override |
+
+**Output:** NARRATION_CUE (audio with timeline metadata)
+
+#### Narration Director
+
+Receive any number of Narration Cues and compose a complete narration track.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| total_frames | INT | Total video frames |
+| fps | FLOAT | Frame rate |
+| sample_rate | INT | Output sample rate (default 44100) |
+| match_mode | COMBO | natural (keep original length) / trim (cut at end) / fit (resample to fill) |
+| cues | AUTOGROW | Dynamic Narration Cue inputs |
+| background_audio | AUDIO | Optional background music |
+| background_volume | FLOAT | BGM volume (0–2) |
+| timeline_data | STRING | Director UI state (does not store audio data) |
+
+**Outputs:** AUDIO (composed narration), duration, timeline_json
+
+**Director UI features:**
+- Timeline visualization showing each cue's position
+- Drag to reposition clips
+- Edit start/end time, volume, and text label
+- Workflow only saves JSON metadata
+
+---
+
 ### Video Segment Info
 
 Calculate video segment information for use with loop nodes.
@@ -318,6 +369,7 @@ Total segments: `(300 + 100 - 1) // 100 = 3`
 
 ## Version
 
+- v0.10.01 - Added NarrationCue + NarrationDirector narration director: connects external local TTS (IndexTTS2), supports natural/trim/fit matching, visual timeline UI, zero network requests
 - v0.8.0 - Added Audio Timeline Editor (visual drag-and-drop alignment), AudioCompose with frame-level alignment
 - v0.7.0 - Added AudioCompose nodes for positioned audio synthesis
 - v0.2.0 - Added GetVideoFrame, GetVideoFramesRange, VideoCrop, ImageToVideo, VideoScale, VideoInfo nodes; Added chunk processing
