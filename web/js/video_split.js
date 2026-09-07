@@ -79,6 +79,10 @@ const helpTexts = {
         "en": "Sample long LTX Video in temporal chunks to reduce peak VRAM. Later chunks retain prior output as context for continuity.\n\n**Inputs:**\n- noise / guider / sampler / sigmas: Standard advanced sampling inputs\n- latent_image: LTX video latent, or LTX AV nested latent\n- chunk_frames: Maximum pixel frames per chunk; internally aligned to 8n+1\n- vae + progressive_decode: Optional tiled CPU decode after sampling\n\n**Outputs:**\n- output: Sampled latent\n- denoised_output: Latent for LTX Decode To Video Segment\n- progressive_images: Optional decoded preview\n- chunk_info: Chunk and memory information",
         "zh": "按时间块采样长 LTX Video，降低峰值显存；后续块会保留上一块输出作为上下文以维持连续性。\n\n**输入:**\n- noise / guider / sampler / sigmas: 标准高级采样输入\n- latent_image: LTX 视频 latent，或 LTX AV NestedTensor latent\n- chunk_frames: 每块最大像素帧数；内部会对齐到 8n+1\n- vae + progressive_decode: 可选，采样后以 tiled VAE 解码到 CPU\n\n**输出:**\n- output: 采样后的 latent\n- denoised_output: 供 LTX Decode To Video Segment 使用的 latent\n- progressive_images: 可选的解码预览\n- chunk_info: 分块和显存信息"
     },
+    "VideoSplitNarrationDirector": {
+        "en": "Arrange AUDIO from local TTS nodes on a visual timeline. Connect each IndexTTS2 AUDIO output through a Narration Cue, then connect the cues here. This node performs no TTS model loading and makes no network requests.",
+        "zh": "在可视化时间线上编排本地 TTS 节点输出的 AUDIO。将每个 IndexTTS2 AUDIO 输出先连接到 Narration Cue，再把 Cue 接入本节点。本节点不加载 TTS 模型，也不发起网络请求。"
+    },
     "LTXVUnlimitedPreview": {
         "en": "Add a live preview wrapper for LTX Video chunk sampling. Connect its MODEL output to the guider/model path used by LTX Video Sampler Unlimited.\n\n**Inputs:**\n- model: Model to wrap\n- max_resolution: Preview resolution cap\n- quality: JPEG preview quality\n- fps: Preview frame rate\n- frame_stride: Preview every Nth frame\n- tiny_vae: Optional approximate VAE\n\n**Output:**\n- model: Preview-enabled model",
         "zh": "为 LTX Video 分块采样添加实时预览包装。将输出 MODEL 接到 LTX Video Sampler Unlimited 所用的 guider/model 路径。\n\n**输入:**\n- model: 要包装的模型\n- max_resolution: 预览分辨率上限\n- quality: JPEG 预览质量\n- fps: 预览帧率\n- frame_stride: 每隔 N 帧预览一帧\n- tiny_vae: 可选的近似 VAE\n\n**输出:**\n- model: 已启用预览的模型"
@@ -128,7 +132,9 @@ const HELP_NODES = new Set([
     "LTXVVideoSegmentInfo", "LTXVGetVideoSegment",
     "LTXVDecodeToVideoSegment", "ImageCollectLowMemoryVideo", "FinalVideoSave",
     // Wan22 / Bernini 分块采样节点
-    "Wan22UnlimitedSampler", "Wan22UnlimitedPreview"
+    "Wan22UnlimitedSampler", "Wan22UnlimitedPreview",
+    // 配音导演台节点
+    "VideoSplitNarrationDirector"
 ]);
 const nodeDescriptions = new Map();
 
@@ -365,6 +371,7 @@ app.registerExtension({
                     name: "timeline_ui",
                 };
             }
+
         } catch (error) {
             console.error("Error in registering comfyui-video-split", error);
         }
@@ -384,6 +391,7 @@ app.registerExtension({
                 this.initTimelineEditor(node);
             }, 100);
         }
+
     },
     
     initTimelineEditor(node) {
